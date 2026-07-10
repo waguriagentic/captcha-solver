@@ -1,0 +1,10 @@
+# Declarative manifest for reproducibility. These already live in the project venv
+# (run.sh sources it); this file documents the runtime deps, it is not auto-installed.
+fastapi
+uvicorn
+pydantic
+cloakbrowser
+pillow
+# Note: whisper/curl are NOT required — the audio-challenge path was removed
+# (it was dead code and reliably IP-blocked). reCAPTCHA/hCaptcha image challenges
+# use the Mistral vision key pool (stdlib urllib, no extra dep).

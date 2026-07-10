@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+
+# Artifacts
+.pytest_cache/
+*.log
+
+# Credentials
+.env
+.solver-token.env
+apikey.txt
+**/apikey.txt
+
+# Local-only
+tests/
+AGENTS.md
+CLAUDE.md
+.kiro/
