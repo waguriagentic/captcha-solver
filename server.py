@@ -67,9 +67,9 @@ app = FastAPI(
 # the endpoint proceeds — real enforcement stays at the Caddy layer (public domain only).
 _bearer = HTTPBearer(auto_error=False, description="Bearer token (required on the public "
                      "domain; enforced by the reverse proxy). Ignored for local calls.")
-SUPPORTED = ["turnstile", "recaptcha", "hcaptcha", "cloudflare", "awswaf"]
-# Page-level solvers that harvest a cookie (no sitekey needed).
-_PAGE_LEVEL = ("cloudflare", "awswaf")
+SUPPORTED = ["turnstile", "recaptcha", "hcaptcha", "cloudflare", "awswaf", "botguard"]
+# Page-level solvers that harvest a cookie/token from the live page (no sitekey needed).
+_PAGE_LEVEL = ("cloudflare", "awswaf", "botguard")
 # Allow private/loopback targets only when explicitly opted in (dev/testing).
 _ALLOW_PRIVATE = os.getenv("SOLVER_ALLOW_PRIVATE") == "1"
 
@@ -174,7 +174,8 @@ class SolveRequest(BaseModel):
         None, description="Site key from the target page. Required for turnstile/recaptcha/"
         "hcaptcha; not used for type=cloudflare (page-level clearance).",
         examples=["0x4AAAAAAA..."])
-    url: str = Field(..., description="Page the captcha is on (also the intercept origin).",
+    url: Optional[str] = Field(None, description="Page the captcha is on (also the intercept origin). "
+                     "Required for all types except botguard (which defaults to the Google sign-in page).",
                      examples=["https://target.com"])
 
     # All-captcha optional
@@ -205,6 +206,10 @@ class SolveRequest(BaseModel):
     verify_url: Optional[str] = Field(None, description="Turnstile: verify the token from the same session at this URL.")
     verify_payload: Optional[dict] = Field(None, description="Turnstile: body for verify_url; token is injected as \"token\".")
     page_url: Optional[str] = Field(None, description="Turnstile: origin to intercept (defaults to verify_url).")
+
+    # botguard-only (Google OAuth token extraction)
+    email: Optional[str] = Field(None, description="BotGuard: account email to enter — drives the sign-in flow to the token-bearing RPC.")
+    password: Optional[str] = Field(None, description="BotGuard: optional password — if set, drives to the password step and grabs the B4hajb hard-gate token instead of the MI613e lookup token.")
 
 
 # Named request examples → Swagger UI renders these as a dropdown picker on /solve.
@@ -244,6 +249,11 @@ _SOLVE_EXAMPLES = {
         "summary": "AWS WAF token (silent JS challenge → aws-waf-token)",
         "value": {"type": "awswaf", "url": "https://protected.example.com/waitlist",
                   "proxy": "http://user:pass@ip:port"},
+    },
+    "botguard": {
+        "summary": "BotGuard (Google OAuth bgRequest token + session cookies)",
+        "value": {"type": "botguard", "email": "user@example.com",
+                  "password": "optional-for-hard-gate-token"},
     },
 }
 
@@ -358,6 +368,14 @@ async def _dispatch(req: SolveRequest) -> dict:
         r = await solve_aws_waf(req.url, req.proxy, req.timeout_s, actions, fetches)
         return {"type": "awswaf", **r}
 
+    if req.type == "botguard":
+        from botguard.solve import solve_botguard
+        actions, _ = _extract(req)
+        r = await solve_botguard(
+            url=req.url, email=req.email, password=req.password,
+            proxy=req.proxy, timeout_s=req.timeout_s or 90, pre_actions=actions)
+        return {"type": "botguard", **r}
+
     # reCAPTCHA
     from recaptcha.solve import (
         solve_recaptcha_v3, solve_recaptcha_v3_realpage, solve_recaptcha_invisible,
@@ -426,6 +444,9 @@ async def solve(req: SolveRequest = Body(..., openapi_examples=_SOLVE_EXAMPLES))
     """
     if req.type not in SUPPORTED:
         raise HTTPException(400, f"Unsupported type: {req.type}. Supported: {SUPPORTED}")
+    # botguard defaults its own sign-in URL; every other type needs an explicit one.
+    if req.type == "botguard" and not req.url:
+        req.url = "https://accounts.google.com/signin/v2/identifier?flowName=GlifWebSignIn"
     if not req.url:  # pydantic makes url required but allows ""; goto("") is meaningless
         raise HTTPException(400, "url is required")
     if req.type not in _PAGE_LEVEL and not req.sitekey:
