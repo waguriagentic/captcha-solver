@@ -18,6 +18,7 @@ the rest. Returns solved:false only if every attempt failed.
 """
 import asyncio
 import base64
+import random
 import datetime
 import hashlib
 import hmac
@@ -161,21 +162,37 @@ async def solve_aliyun(scene_id: str, prefix: str, region: str = "sgp",
             return None
 
         async def human_drag(handle, dist):
+            # Overshoot-and-correct trajectory. Aliyun scores drag KINEMATICS, not just the
+            # final position: a monotonic smoothstep lands the piece pixel-correct yet is
+            # rejected (F001) as a bot. A/B live: monotonic 0/3 T001 vs overshoot 3/3 T001.
+            # Humans ballistically overshoot the target then correct back — that's the pass
+            # signal. Ballistic ease-out + ~6-11px overshoot + multi-step correction. Do NOT
+            # over-jitter: heavy jitter/pauses (profile "over2") regressed to 2/3.
             sx = handle["x"] + handle["w"] / 2
             sy = handle["y"] + handle["h"] / 2
             await cdp.send("Input.dispatchMouseEvent", {
                 "type": "mousePressed", "x": sx, "y": sy, "button": "left", "clickCount": 1})
-            n = 46
+            over = dist + random.uniform(6, 11)
+            n = 42
             for i in range(1, n + 1):
                 t = i / n
-                ease = t * t * (3 - 2 * t)
+                ease = 1 - (1 - t) ** 3          # ballistic: fast start, slow approach
                 await cdp.send("Input.dispatchMouseEvent", {
-                    "type": "mouseMoved", "x": sx + dist * ease,
-                    "y": sy + np.sin(t * 6) * 1.3, "button": "left"})
-                await asyncio.sleep(0.013 + (i % 5) * 0.005)
+                    "type": "mouseMoved", "x": sx + over * ease,
+                    "y": sy + np.sin(t * 5) * 1.2, "button": "left"})
+                await asyncio.sleep(0.011 + (i % 4) * 0.004)
+            # correction phase: drift back from the overshoot to the true target
+            cn = 10
+            for j in range(1, cn + 1):
+                t = j / cn
+                cur = over + (dist - over) * t
+                await cdp.send("Input.dispatchMouseEvent", {
+                    "type": "mouseMoved", "x": sx + cur,
+                    "y": sy + random.uniform(-0.6, 0.6), "button": "left"})
+                await asyncio.sleep(0.02 + random.uniform(0, 0.015))
             await cdp.send("Input.dispatchMouseEvent", {
                 "type": "mouseMoved", "x": sx + dist, "y": sy, "button": "left"})
-            await asyncio.sleep(0.14)
+            await asyncio.sleep(0.16 + random.uniform(0, 0.1))
             await cdp.send("Input.dispatchMouseEvent", {
                 "type": "mouseReleased", "x": sx + dist, "y": sy, "button": "left"})
 
