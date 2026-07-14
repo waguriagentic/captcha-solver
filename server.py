@@ -97,6 +97,7 @@ def _is_solved(result: dict) -> bool:
 def _log_solve(type_: str, sitekey: Optional[str], url: str, result: dict):
     """Push a solve event to the ring buffer."""
     sitekey = sitekey or ""  # cloudflare has no sitekey
+    url = url or ""          # self-hosted solvers (aliyun, botguard, ...) carry no url
     solved = _is_solved(result)
     _solve_log.appendleft({
         "type": type_,
@@ -525,10 +526,11 @@ async def solve(req: SolveRequest = Body(..., openapi_examples=_SOLVE_EXAMPLES))
     log.info("Solve: type=%s sitekey=%s url=%s", req.type, sk[:12], req.url)
 
     task_id = next(_task_ids)
+    _url = req.url or ""   # self-hosted solvers (aliyun, botguard, ...) carry no url
     _solve_current[task_id] = {
         "type": req.type,
         "sitekey": sk[:12] + ("..." if len(sk) > 12 else ""),
-        "url": req.url[:60] + ("..." if len(req.url) > 60 else ""),
+        "url": _url[:60] + ("..." if len(_url) > 60 else ""),
         "version": req.version or None,
         "started_at": time.time(),
     }
