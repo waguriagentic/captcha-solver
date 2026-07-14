@@ -5,6 +5,11 @@ uvicorn
 pydantic
 cloakbrowser
 pillow
+# aliyun solver gap detector: YOLOv8n ONNX (thread-limited to 2 cores) with a cv2
+# fallback. opencv-python-headless (not the GUI build — no libGL on servers).
+onnxruntime
+opencv-python-headless
+numpy
 # Note: whisper/curl are NOT required — the audio-challenge path was removed
 # (it was dead code and reliably IP-blocked). reCAPTCHA/hCaptcha image challenges
 # use the Mistral vision key pool (stdlib urllib, no extra dep).

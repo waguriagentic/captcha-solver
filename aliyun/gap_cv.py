@@ -13,6 +13,32 @@ import numpy as np
 
 
 def detect_gap_x(back_bytes: bytes, shadow_bytes: bytes) -> dict:
+    """Detect the gap left-edge x. Prefer the trained YOLO ONNX model (mean ~few px,
+    robust to busy backgrounds); fall back to the cv2 template matcher when best.onnx
+    is absent or ORT is unavailable. Both return the same {gap_x, piece_w, ...} contract."""
+    try:
+        from .gap_yolo import detect_gap_yolo
+        y = detect_gap_yolo(back_bytes, shadow_bytes)
+        if y is not None:
+            # backfill piece geometry from the shadow alpha (exact) for the drag math
+            try:
+                sh = cv2.imdecode(np.frombuffer(shadow_bytes, np.uint8), cv2.IMREAD_UNCHANGED)
+                alpha = sh[:, :, 3] if (sh.ndim == 3 and sh.shape[2] == 4) else \
+                    (cv2.cvtColor(sh, cv2.COLOR_BGR2GRAY) > 10).astype(np.uint8) * 255
+                xs = np.where(alpha > 30)[1]
+                x0, x1 = int(xs.min()), int(xs.max())
+                y.setdefault("piece_x0", x0)
+                y["piece_w"] = x1 - x0            # trust exact alpha width over the box
+                y["slide_dist"] = y["gap_x"] - x0
+            except Exception:
+                pass
+            return y
+    except Exception:
+        pass
+    return _detect_gap_cv(back_bytes, shadow_bytes)
+
+
+def _detect_gap_cv(back_bytes: bytes, shadow_bytes: bytes) -> dict:
     back = cv2.imdecode(np.frombuffer(back_bytes, np.uint8), cv2.IMREAD_COLOR)
     sh = cv2.imdecode(np.frombuffer(shadow_bytes, np.uint8), cv2.IMREAD_UNCHANGED)
     if sh.ndim == 3 and sh.shape[2] == 4:

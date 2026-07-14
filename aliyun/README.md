@@ -1,9 +1,36 @@
 # aliyun — Aliyun Captcha 2.0 slide-puzzle solver
 
 Harvest-only solver for Aliyun Captcha 2.0 (the slide-puzzle used by Qoder et al).
-No third party (no CapMonster). Renders the widget on a minimal self-hosted page,
-detects the gap with OpenCV, drags the slider along the empirically-fitted **quadratic**
-handle→piece curve, and harvests the SDK-built token from `captchaVerifyCallback`.
+No third party at solve time (no CapMonster). Renders the widget on a minimal
+self-hosted page, detects the gap, drags the slider along the empirically-fitted
+**quadratic** handle→piece curve, and harvests the SDK-built token from
+`captchaVerifyCallback`.
+
+## Gap detection — YOLOv8n (with cv2 fallback)
+
+The gap detector is a trained **YOLOv8n** ONNX model (`best.onnx`, 1-class "gap").
+It runs on CPU, **thread-limited to 2 cores** (`intra_op_num_threads=2`) so it never
+spikes the box. `gap_cv.detect_gap_x()` uses YOLO when `best.onnx` is present and
+falls back to the cv2 Sobel-x template matcher otherwise — same return contract.
+
+Benchmark vs 6 held-out ground-truth samples:
+
+| detector        | mean err | within 8px | speed (warm) | cores |
+| --------------- | -------- | ---------- | ------------ | ----- |
+| cv2 Sobel       | ~26px    | 2/6        | ~10ms        | 1     |
+| **YOLOv8n ONNX**| **1.8px**| **6/6**    | **~20ms**    | **2** |
+
+**How the model was made** (reproducible): collect ~400 live challenge image-pairs
+(no solving), label each gap via 2Captcha `CoordinatesTask` as a one-time offline
+oracle (~$0.50 total), train YOLOv8n on Camber GPU (~2.5 min, mAP50 0.95), export
+ONNX. The paid solver is the *teacher* used once for labels — never called at solve
+time. Training assets live in `qoder-register/re/` (collect_dataset / label_2captcha /
+build_dataset / run_camber).
+
+## Dependencies
+
+`onnxruntime` (CPU) + `opencv-python-headless` + `numpy`. The YOLO path degrades to
+cv2 gracefully if `onnxruntime` or `best.onnx` is missing.
 
 ## Request
 
