@@ -13,6 +13,24 @@ It runs on CPU, **thread-limited to 2 cores** (`intra_op_num_threads=2`) so it n
 spikes the box. `gap_cv.detect_gap_x()` uses YOLO when `best.onnx` is present and
 falls back to the cv2 Sobel-x template matcher otherwise — same return contract.
 
+## Drag — overshoot-and-correct (behavioral, NOT just position)
+
+Aliyun 2.0 scores drag **kinematics**, not only the final position. A monotonic
+smoothstep drag lands the piece pixel-correct yet is rejected as a bot (verify code
+**F001** = "near miss / behavioral fail"). Proven two ways:
+
+- **Wide hx-offset sweep** (±40px, 30 live attempts): **0 T001** at any offset — so the
+  failure is not positional.
+- **A/B drag profiles, same YOLO position**: monotonic smoothstep **0/3** T001 vs
+  overshoot-correct **3/3** T001.
+
+`human_drag` therefore uses a **ballistic** trajectory: fast-start / slow-approach
+ease-out, **overshoot the target by ~6-11px**, then a multi-step correction back to the
+true target. This is the human tell that passes. Do **not** over-jitter — a heavier
+profile with random pauses + big jitter ("over2") regressed to 2/3. Clean overshoot wins.
+
+End-to-end (`solve_aliyun`, YOLO detect + overshoot drag): **3/3 T001**.
+
 Benchmark vs 6 held-out ground-truth samples:
 
 | detector        | mean err | within 8px | speed (warm) | cores |
