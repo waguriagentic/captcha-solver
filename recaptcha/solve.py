@@ -35,13 +35,32 @@ _KEYFILE = Path(__file__).parent.parent / "common" / "apikey.txt"
 _keypool = None
 
 
+def _build_keypool():
+    model = os.getenv("RECAPTCHA_MISTRAL_MODEL", "mistral-medium-latest")
+    # vary the start offset by pid so concurrent procs don't hammer key #0
+    return KeyPool(str(_KEYFILE), model=model, start_index=os.getpid())
+
+
 def _get_keypool():
-    """Lazy, shared Mistral key pool (only built if an image challenge appears)."""
+    """Lazy tile classifier for the image challenge. Prefers the local ONNX
+    classifier (yolov8n-cls, thread-limited, free) and falls back to the Mistral key
+    pool for out-of-vocabulary targets. If the ONNX model is absent, returns the
+    Mistral pool alone — behaviour is unchanged from before the model existed.
+
+    Named _get_keypool for call-site compatibility; the returned object only needs a
+    .classify(image_b64, target) -> bool method, which both KeyPool and
+    HybridClassifier provide."""
     global _keypool
     if _keypool is None:
-        model = os.getenv("RECAPTCHA_MISTRAL_MODEL", "mistral-medium-latest")
-        # vary the start offset by pid so concurrent procs don't hammer key #0
-        _keypool = KeyPool(str(_KEYFILE), model=model, start_index=os.getpid())
+        from .onnx_classifier import get_classifier, HybridClassifier
+        onnx = get_classifier()
+        if onnx is not None:
+            # keypool built lazily inside the hybrid only when an unknown target hits
+            _keypool = HybridClassifier(onnx, _build_keypool())
+            log.info("reCAPTCHA image classifier: ONNX (hybrid, Mistral fallback)")
+        else:
+            _keypool = _build_keypool()
+            log.info("reCAPTCHA image classifier: Mistral only (no ONNX model found)")
     return _keypool
 
 _TEMPLATE_PATH = Path(__file__).parent / "template.html"
@@ -311,11 +330,16 @@ async def solve_recaptcha_v2(sitekey: str, url: str,
 
                 for attempt in range(1, max_attempts + 1):
                     log.info("v2 attempt %d/%d", attempt, max_attempts)
-                    try:
-                        await page.frame_locator(_ANCHOR_IFRAME).locator(
-                            "#recaptcha-anchor").click(timeout=8000)
-                    except Exception as e:
-                        log.warning("checkbox click: %s", str(e).splitlines()[0])
+                    for _ctry in range(3):
+                        try:
+                            await page.frame_locator(_ANCHOR_IFRAME).locator(
+                                "#recaptcha-anchor").click(timeout=8000)
+                            break
+                        except Exception as e:
+                            log.warning("checkbox click attempt %d: %s",
+                                        _ctry + 1, str(e).splitlines()[0])
+                            if _ctry < 2:
+                                await asyncio.sleep(1)
 
                     # Poll: checked (no-challenge win) OR an image grid opens.
                     challenge = False

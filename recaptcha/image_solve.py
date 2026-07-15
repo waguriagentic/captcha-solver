@@ -62,7 +62,20 @@ async def _classify_grid(bf, keypool, target: str, n: int) -> list:
     table = await bf.query_selector("table")
     if not table:
         return []
-    grid_png = await table.screenshot()
+    try:
+        await asyncio.wait_for(table.wait_for_element_state("stable", timeout=3000),
+                               timeout=5)
+    except Exception:
+        pass
+    try:
+        grid_png = await asyncio.wait_for(table.screenshot(), timeout=10)
+    except asyncio.TimeoutError:
+        log.warning("grid screenshot timed out, retrying with frame screenshot")
+        try:
+            grid_png = await asyncio.wait_for(bf.screenshot(), timeout=10)
+        except Exception:
+            log.warning("frame screenshot also failed")
+            return []
     img = Image.open(io.BytesIO(grid_png)).convert("RGB")
     W, H = img.size
     tw, th = W // n, H // n
@@ -133,11 +146,27 @@ async def solve_image_challenge(page, keypool, max_rounds: int = _MAX_DYNAMIC_RO
     if not clicked_any:
         log.info("no tiles matched %r", target)
         # still press verify — an all-correct 'none' answer is a valid solve
-    try:
-        await page.frame_locator(
-            "iframe[title*='recaptcha challenge']").locator(_VERIFY).click(timeout=4000)
-    except Exception as e:
-        log.warning("verify click: %s", str(e).splitlines()[0])
-        return False
+    for _vtry in range(3):
+        try:
+            await page.frame_locator(
+                "iframe[title*='recaptcha challenge']").locator(
+                _VERIFY).click(timeout=4000, force=True)
+            break
+        except Exception as e:
+            log.warning("verify click attempt %d: %s", _vtry + 1, str(e).splitlines()[0])
+            if _vtry == 2:
+                try:
+                    bf2 = await _find_bframe(page)
+                    if bf2:
+                        await bf2.evaluate(
+                            "() => { const b=document.querySelector('"
+                            "#recaptcha-verify-button'); if(b) b.click(); }")
+                        log.info("verify click: JS fallback succeeded")
+                        break
+                except Exception as e2:
+                    log.warning("verify JS fallback: %s", str(e2).splitlines()[0])
+                return False
+            await asyncio.sleep(1)
+            bf = await _find_bframe(page) or bf
     await asyncio.sleep(3)
     return True

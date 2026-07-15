@@ -154,6 +154,7 @@ async def solve_aliyun(scene_id: str, prefix: str, region: str = "sgp",
                     "button": "left", "clickCount": 1})
 
         async def wait_challenge():
+            h = None
             for _ in range(18):
                 h = await page.evaluate(
                     "()=>{const s=document.getElementById('aliyunCaptcha-sliding-slider');"
@@ -162,7 +163,43 @@ async def solve_aliyun(scene_id: str, prefix: str, region: str = "sgp",
                 if h and latest["back"] and latest["shadow"]:
                     return h
                 await page.wait_for_timeout(500)
-            return None
+            # DOM fallback: capture puzzle images directly from the page when network
+            # interception misses the PNGs (AIGC challenges, CDN variations).
+            if h:
+                dom = await page.evaluate(
+                    "()=>{const imgs=document.querySelectorAll("
+                    "'#aliyunCaptcha-window img,[class*=puzzle] img,[class*=captcha] img');"
+                    "const out={back:null,shadow:null};"
+                    "for(const img of imgs){"
+                    "if(!img.naturalWidth)continue;"
+                    "const c=document.createElement('canvas');"
+                    "c.width=img.naturalWidth;c.height=img.naturalHeight;"
+                    "c.getContext('2d').drawImage(img,0,0);"
+                    "const url=c.toDataURL('image/png');"
+                    "const src=img.src||'';"
+                    "if(src.includes('back')||(!out.back&&src.includes('PUZZLE')))out.back=url;"
+                    "else if(src.includes('shadow')||(!out.shadow&&src.includes('PUZZLE')))out.shadow=url;"
+                    "}return out;}")
+                if dom and dom.get("back"):
+                    import re as _re
+                    _b64 = lambda d: base64.b64decode(_re.sub(r"^data:image/\w+;base64,", "", d))
+                    latest["back"] = _b64(dom["back"])
+                    if dom.get("shadow"):
+                        latest["shadow"] = _b64(dom["shadow"])
+                else:
+                    # Last resort: screenshot the captcha background area
+                    bg_rect = await page.evaluate(
+                        "()=>{const el=document.querySelector("
+                        "'#aliyunCaptcha-window-puzzle,[class*=puzzle-bg],[class*=captcha-bg]');"
+                        "if(!el)return null;const r=el.getBoundingClientRect();"
+                        "return r.width>0?{x:r.x,y:r.y,w:r.width,h:r.height}:null;}")
+                    if bg_rect:
+                        ss = await page.screenshot(clip={
+                            "x": bg_rect["x"], "y": bg_rect["y"],
+                            "width": bg_rect["w"], "height": bg_rect["h"]})
+                        latest["back"] = ss
+                        latest["shadow"] = ss
+            return h
 
         async def human_drag(handle, dist):
             # Overshoot-and-correct trajectory. Aliyun scores drag KINEMATICS, not just the

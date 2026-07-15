@@ -302,9 +302,10 @@ class SolveResponse(BaseModel):
                       examples=["turnstile"])
     solved: bool = Field(..., description="THE success signal. True iff the captcha was solved, "
                          "uniform across every type — read this instead of branching per-type.")
-    token: Optional[str] = Field(None, description="Solved token for token types (turnstile/"
+    token: Optional[str | dict] = Field(None, description="Solved token for token types (turnstile/"
                                  "recaptcha/hcaptcha). Absent for type=cloudflare (see cf_clearance); "
-                                 "empty string on a failed/realpage solve — trust `solved`, not this.")
+                                 "empty string on a failed/realpage solve — trust `solved`, not this. "
+                                 "aliyun returns a dict {sceneId, certifyId, deviceToken, data}.")
     method: Optional[str] = Field(None, description="Which path solved it (route | execute | real-page | image | …).")
     elapsed: Optional[float] = Field(None, description="Solve time (seconds).")
     error: Optional[str] = Field(None, description="Set when the solve failed but returned 200.")

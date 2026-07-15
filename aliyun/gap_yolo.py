@@ -65,6 +65,8 @@ def detect_gap_yolo(back_bytes: bytes, shadow_bytes: bytes = None):
     sess = _get_session()
     if sess is None:
         return None
+    if not back_bytes:
+        return None
     arr = np.frombuffer(back_bytes, np.uint8)
     back = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     H, W = back.shape[:2]
