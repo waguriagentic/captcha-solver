@@ -22,7 +22,3 @@ tests/
 AGENTS.md
 CLAUDE.md
 .kiro/
-
-# Model weights (large binary, trained locally)
-*.onnx
-recaptcha/models/
