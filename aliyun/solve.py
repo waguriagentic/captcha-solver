@@ -1,10 +1,16 @@
-"""Aliyun Captcha 2.0 (slide-puzzle) solver — harvest-only, no third party.
+"""Aliyun Captcha 2.0 solver — harvest-only, no third party.
 
 Renders the widget on a minimal self-hosted page (CapMonster-style: only needs
-sceneId + prefix, never visits the target site), detects the gap with cv2, drags the
-slider using the empirically-fitted QUADRATIC handle→piece curve (the anti-bot trick
-that defeats naive linear solvers), and harvests the SDK-built token from
-captchaVerifyCallback:
+sceneId + prefix, never visits the target site), intercepts the InitCaptchaV3
+response to detect the CaptchaType, and dispatches to the matching solver path:
+
+  - TRACELESS  (02): silent — click button → captchaVerifyCallback (no popup/slider)
+  - SLIDE      (03): drag slider full track width (no gap detection)
+  - PUZZLE     (05): YOLO/cv2 gap detect + quadratic overshoot drag (the proven path)
+  - INPAINTING (06): same as PUZZLE (slider + gap detect), base64 data-URL images
+  - ONE_CLICK  (07): single checkbox click → callback
+
+All paths harvest the SDK-built token from captchaVerifyCallback:
 
     {sceneId, certifyId, deviceToken, data}
 
@@ -13,8 +19,8 @@ The token is session-bound + one-time-use — the caller must use it right away 
 if a proxy was used to solve, verify from the same IP (deviceToken is time-bound).
 
 Retries internally until the server-side verify returns T001, refreshing the challenge
-each miss (captcha refresh is free). The gap detector is ~50% single-shot; retry closes
-the rest. Returns solved:false only if every attempt failed.
+each miss (captcha refresh is free). Falls back to the PUZZLE path if the CaptchaType
+is unknown or the InitCaptchaV3 response was not intercepted (backward compat).
 """
 import asyncio
 import base64
@@ -41,6 +47,15 @@ from .gap_cv import detect_gap_x
 # Invert to get the handle drag distance for a target piece offset. Stable because the
 # widget renders the bg at a fixed 300px; re-fit if Aliyun changes the render size.
 _COEF = (0.00355, 0.0769, -0.004)
+
+# Aliyun Captcha 2.0 types. The InitCaptchaV3 response returns CaptchaType as a
+# NAME string (e.g. "TRACELESS", "PUZZLE"), not a numeric code. Dispatched to
+# type-specific handlers; unknown names fall back to PUZZLE (backward compat).
+TYPE_TRACELESS = "TRACELESS"   # invisible — silent, click button → callback, no popup/slider
+TYPE_SLIDE = "SLIDE"           # drag-to-end slider, no gap detection (full track width)
+TYPE_PUZZLE = "PUZZLE"         # jigsaw — YOLO/cv2 gap detect + quadratic drag (existing path)
+TYPE_INPAINTING = "INPAINTING" # image restore — same slider mechanism as PUZZLE, base64 images
+TYPE_ONE_CLICK = "ONE_CLICK"   # single checkbox click → callback
 
 # Aliyun captcha-open signing key. This is NOT a private credential — it is the PUBLIC
 # scene AccessKey that Aliyun embeds in the captcha frontend JS of every site using this
@@ -113,10 +128,21 @@ async def solve_aliyun(scene_id: str, prefix: str, region: str = "sgp",
         ctx = await browser.new_context()
         page = await ctx.new_page()
         cdp = await ctx.new_cdp_session(page)
-        latest = {"back": None, "shadow": None}
+        latest = {"back": None, "shadow": None, "captcha_type": None}
 
         async def on_response(resp):
             u = resp.url
+            if "captcha-open" in u or "aliyuncs" in u:
+                try:
+                    txt = await resp.text()
+                    j = json.loads(txt) if txt.strip().startswith("{") else None
+                    if j and "CaptchaType" in j:
+                        ct = str(j["CaptchaType"])
+                        latest["captcha_type"] = ct
+                        log.info("aliyun: InitCaptchaV3 CaptchaType=%s", ct)
+                except Exception:
+                    pass
+                return
             if u.endswith(".png") and "PUZZLE" in u:
                 try:
                     bd = await resp.body()
@@ -154,6 +180,36 @@ async def solve_aliyun(scene_id: str, prefix: str, region: str = "sgp",
                     "button": "left", "clickCount": 1})
 
         async def wait_challenge():
+            async def grab_dom_images():
+                dom = await page.evaluate(
+                    "()=>{const out={back:null,shadow:null};"
+                    "const back=document.getElementById('aliyunCaptcha-img');"
+                    "const piece=document.getElementById('aliyunCaptcha-puzzle');"
+                    "const all=document.querySelectorAll('img');"
+                    "const mk=(img)=>{if(!img||!img.naturalWidth)return null;"
+                    "const c=document.createElement('canvas');"
+                    "c.width=img.naturalWidth;c.height=img.naturalHeight;"
+                    "c.getContext('2d').drawImage(img,0,0);"
+                    "return c.toDataURL('image/png');};"
+                    "if(back)out.back=mk(back);"
+                    "if(piece)out.shadow=mk(piece);"
+                    "if(!out.back||!out.shadow){"
+                    "for(const img of all){"
+                    "if(!img.naturalWidth)continue;"
+                    "const src=(img.src||'')+img.id+img.className;"
+                    "const url=mk(img);if(!url)continue;"
+                    "if(src.includes('back')||(!out.back&&(src.includes('puzzle')||src.includes('captcha'))))out.back=url;"
+                    "else if(src.includes('shadow')||src.includes('piece')||(!out.shadow&&(src.includes('puzzle')||src.includes('captcha'))))out.shadow=url;}}"
+                    "return out;}")
+                if dom and dom.get("back"):
+                    import re as _re
+                    _b64 = lambda d: base64.b64decode(_re.sub(r"^data:image/\w+;base64,", "", d))
+                    latest["back"] = _b64(dom["back"])
+                    if dom.get("shadow"):
+                        latest["shadow"] = _b64(dom["shadow"])
+                    return True
+                return False
+
             h = None
             for _ in range(18):
                 h = await page.evaluate(
@@ -162,43 +218,24 @@ async def solve_aliyun(scene_id: str, prefix: str, region: str = "sgp",
                     "return r.width>0?{x:r.x,y:r.y,w:r.width,h:r.height}:null;}")
                 if h and latest["back"] and latest["shadow"]:
                     return h
+                if h:
+                    await grab_dom_images()
+                    if latest["back"] and latest["shadow"]:
+                        return h
                 await page.wait_for_timeout(500)
-            # DOM fallback: capture puzzle images directly from the page when network
-            # interception misses the PNGs (AIGC challenges, CDN variations).
-            if h:
-                dom = await page.evaluate(
-                    "()=>{const imgs=document.querySelectorAll("
-                    "'#aliyunCaptcha-window img,[class*=puzzle] img,[class*=captcha] img');"
-                    "const out={back:null,shadow:null};"
-                    "for(const img of imgs){"
-                    "if(!img.naturalWidth)continue;"
-                    "const c=document.createElement('canvas');"
-                    "c.width=img.naturalWidth;c.height=img.naturalHeight;"
-                    "c.getContext('2d').drawImage(img,0,0);"
-                    "const url=c.toDataURL('image/png');"
-                    "const src=img.src||'';"
-                    "if(src.includes('back')||(!out.back&&src.includes('PUZZLE')))out.back=url;"
-                    "else if(src.includes('shadow')||(!out.shadow&&src.includes('PUZZLE')))out.shadow=url;"
-                    "}return out;}")
-                if dom and dom.get("back"):
-                    import re as _re
-                    _b64 = lambda d: base64.b64decode(_re.sub(r"^data:image/\w+;base64,", "", d))
-                    latest["back"] = _b64(dom["back"])
-                    if dom.get("shadow"):
-                        latest["shadow"] = _b64(dom["shadow"])
-                else:
-                    # Last resort: screenshot the captcha background area
-                    bg_rect = await page.evaluate(
-                        "()=>{const el=document.querySelector("
-                        "'#aliyunCaptcha-window-puzzle,[class*=puzzle-bg],[class*=captcha-bg]');"
-                        "if(!el)return null;const r=el.getBoundingClientRect();"
-                        "return r.width>0?{x:r.x,y:r.y,w:r.width,h:r.height}:null;}")
-                    if bg_rect:
-                        ss = await page.screenshot(clip={
-                            "x": bg_rect["x"], "y": bg_rect["y"],
-                            "width": bg_rect["w"], "height": bg_rect["h"]})
-                        latest["back"] = ss
-                        latest["shadow"] = ss
+
+            if h and not (latest["back"] and latest["shadow"]):
+                bg_rect = await page.evaluate(
+                    "()=>{const el=document.querySelector("
+                    "'#aliyunCaptcha-window-puzzle,[class*=puzzle-bg],[class*=captcha-bg]');"
+                    "if(!el)return null;const r=el.getBoundingClientRect();"
+                    "return r.width>0?{x:r.x,y:r.y,w:r.width,h:r.height}:null;}")
+                if bg_rect:
+                    ss = await page.screenshot(clip={
+                        "x": bg_rect["x"], "y": bg_rect["y"],
+                        "width": bg_rect["w"], "height": bg_rect["h"]})
+                    latest["back"] = ss
+                    latest["shadow"] = ss
             return h
 
         async def human_drag(handle, dist):
@@ -239,19 +276,16 @@ async def solve_aliyun(scene_id: str, prefix: str, region: str = "sgp",
         if not await load_once():
             return {"solved": False, "error": "SDK failed to load (window.__ready never true)"}
 
-        last_code = None
-        for attempt in range(max_attempts):
-            if time.monotonic() - t_start > timeout_s:
-                break
-            latest["back"] = latest["shadow"] = None
-            # fresh page each attempt = reliable challenge+slider render (in-place refresh
-            # is flaky). Reload is cheap vs the reliability it buys.
-            if attempt > 0 and not await load_once():
-                continue
+        async def _attempt_puzzle(attempt, type_name):
+            # PUZZLE + INPAINTING share this path: open popup → wait for slider+images
+            # → detect gap (YOLO/cv2, with DOM fallback for base64 data-URL images) →
+            # quadratic overshoot drag → harvest token → verify. Preserved exactly from
+            # the proven 3/3 T001 implementation.
             await open_popup()
             handle = await wait_challenge()
             if not handle:
-                continue
+                log.info("aliyun attempt %d [%s]: no slider found", attempt, type_name)
+                return None
 
             g = detect_gap_x(latest["back"], latest["shadow"])
             geo = await page.evaluate(
@@ -268,23 +302,147 @@ async def solve_aliyun(scene_id: str, prefix: str, region: str = "sgp",
 
             tok = await page.evaluate("()=>window.__verify||null")
             if not tok:
-                log.info("aliyun attempt %d: method=%s gap_x=%s dist=%.1f -> NO CALLBACK",
-                         attempt, g.get("method", "cv2"), g["gap_x"], dist)
-                continue
+                log.info("aliyun attempt %d [%s]: method=%s gap_x=%s dist=%.1f -> NO CALLBACK",
+                         attempt, type_name, g.get("method", "cv2"), g["gap_x"], dist)
+                return None
             token = tok if isinstance(tok, dict) else json.loads(tok)
             code = await _verify_in_page(page, token, scene_id, prefix)
-            last_code = code
-            log.info("aliyun attempt %d: method=%s gap_x=%s dist=%.1f -> %s",
-                     attempt, g.get("method", "cv2"), g["gap_x"], dist, code)
-            if code == "T001":
+            log.info("aliyun attempt %d [%s]: method=%s gap_x=%s dist=%.1f -> %s",
+                     attempt, type_name, g.get("method", "cv2"), g["gap_x"], dist, code)
+            return {"token": token, "verify_code": code,
+                    "method": "quadratic-slide", "gap_x": g["gap_x"]}
+
+        async def _attempt_slide(attempt, type_name):
+            # SLIDE: drag the slider the full track width. No gap detection, no images.
+            # The track width is read from the slider container's bounding box; drag
+            # (track_width - handle_width) so the handle reaches the end.
+            await open_popup()
+            handle = None
+            for _ in range(18):
+                handle = await page.evaluate(
+                    "()=>{const s=document.getElementById('aliyunCaptcha-sliding-slider');"
+                    "if(!s)return null;const r=s.getBoundingClientRect();"
+                    "return r.width>0?{x:r.x,y:r.y,w:r.width,h:r.height}:null;}")
+                if handle:
+                    break
+                await page.wait_for_timeout(500)
+            if not handle:
+                log.info("aliyun attempt %d [%s]: no slider found", attempt, type_name)
+                return None
+
+            track = await page.evaluate(
+                "()=>{const t=document.querySelector("
+                "'#aliyunCaptcha-sliding-track,[class*=slider-track],[class*=track]');"
+                "if(!t)return null;const r=t.getBoundingClientRect();"
+                "return r.width>0?{w:r.width}:null;}")
+            track_w = (track or {}).get("w", handle["w"] * 4)
+            dist = track_w - handle["w"]
+
+            await page.evaluate("()=>{window.__verify=null;}")
+            await human_drag(handle, dist)
+            await page.wait_for_timeout(2200)
+
+            tok = await page.evaluate("()=>window.__verify||null")
+            if not tok:
+                log.info("aliyun attempt %d [%s]: dist=%.1f -> NO CALLBACK",
+                         attempt, type_name, dist)
+                return None
+            token = tok if isinstance(tok, dict) else json.loads(tok)
+            code = await _verify_in_page(page, token, scene_id, prefix)
+            log.info("aliyun attempt %d [%s]: dist=%.1f -> %s",
+                     attempt, type_name, dist, code)
+            return {"token": token, "verify_code": code, "method": "full-slide"}
+
+        async def _attempt_traceless(attempt, type_name):
+            # TRACELESS: silent. Click the button (or call startTracelessVerification)
+            # → captchaVerifyCallback fires immediately, no popup/slider/vision.
+            await page.evaluate("()=>{window.__verify=null;}")
+            started = await page.evaluate(
+                "()=>{if(window.__inst&&typeof window.__inst.startTracelessVerification==='function')"
+                "{window.__inst.startTracelessVerification();return true;}return false;}")
+            if not started:
+                await open_popup()
+            tok = None
+            for _ in range(20):
+                tok = await page.evaluate("()=>window.__verify||null")
+                if tok:
+                    break
+                await page.wait_for_timeout(250)
+            if not tok:
+                log.info("aliyun attempt %d [%s]: NO CALLBACK", attempt, type_name)
+                return None
+            token = tok if isinstance(tok, dict) else json.loads(tok)
+            code = await _verify_in_page(page, token, scene_id, prefix)
+            log.info("aliyun attempt %d [%s]: -> %s", attempt, type_name, code)
+            return {"token": token, "verify_code": code, "method": "traceless"}
+
+        async def _attempt_oneclick(attempt, type_name):
+            # ONE_CLICK: single click on the checkbox/button, then await callback.
+            await page.evaluate("()=>{window.__verify=null;}")
+            box = await page.evaluate(
+                "()=>{const sel=['#aliyunCaptcha-btn','#aliyunCaptcha-button',"
+                "'.nc_iconfont','[class*=captcha-btn]','[class*=checkbox]','button#btn'];"
+                "for(const s of sel){const el=document.querySelector(s);"
+                "if(el){const r=el.getBoundingClientRect();"
+                "if(r.width>0)return{x:r.x,y:r.y,w:r.width,h:r.height};}}return null;}")
+            if not box:
+                await open_popup()
+                box = await page.evaluate(
+                    "()=>{const b=document.getElementById('btn');const r=b.getBoundingClientRect();"
+                    "return{x:r.x,y:r.y,w:r.width,h:r.height};}")
+            for t in ("mousePressed", "mouseReleased"):
+                await cdp.send("Input.dispatchMouseEvent", {
+                    "type": t, "x": box["x"] + box["w"] / 2,
+                    "y": box["y"] + box["h"] / 2, "button": "left", "clickCount": 1})
+            tok = None
+            for _ in range(20):
+                tok = await page.evaluate("()=>window.__verify||null")
+                if tok:
+                    break
+                await page.wait_for_timeout(250)
+            if not tok:
+                log.info("aliyun attempt %d [%s]: NO CALLBACK", attempt, type_name)
+                return None
+            token = tok if isinstance(tok, dict) else json.loads(tok)
+            code = await _verify_in_page(page, token, scene_id, prefix)
+            log.info("aliyun attempt %d [%s]: -> %s", attempt, type_name, code)
+            return {"token": token, "verify_code": code, "method": "one-click"}
+
+        ct = latest.get("captcha_type") or ""
+        type_name = ct or "PUZZLE"
+        log.info("aliyun: dispatching to %s handler (CaptchaType=%s)", type_name, ct)
+        if ct == TYPE_TRACELESS:
+            attempt_fn = _attempt_traceless
+        elif ct == TYPE_SLIDE:
+            attempt_fn = _attempt_slide
+        elif ct == TYPE_ONE_CLICK:
+            attempt_fn = _attempt_oneclick
+        else:
+            # PUZZLE, INPAINTING, unknown, or unintercepted → PUZZLE path (backward compat)
+            attempt_fn = _attempt_puzzle
+
+        last_code = None
+        for attempt in range(max_attempts):
+            if time.monotonic() - t_start > timeout_s:
+                break
+            latest["back"] = latest["shadow"] = None
+            if attempt > 0 and not await load_once():
+                continue
+
+            res = await attempt_fn(attempt, type_name)
+            if not res:
+                continue
+            last_code = res["verify_code"]
+            if res["verify_code"] == "T001":
                 return {
-                    "solved": True, "token": token, "verify_code": code,
-                    "method": "quadratic-slide", "attempts": attempt + 1,
+                    "solved": True, "token": res["token"],
+                    "verify_code": res["verify_code"], "method": res["method"],
+                    "captcha_type": type_name, "attempts": attempt + 1,
                     "elapsed": round(time.monotonic() - t_start, 1),
                 }
 
         return {"solved": False, "error": f"no T001 in {max_attempts} attempts",
-                "last_verify_code": last_code,
+                "last_verify_code": last_code, "captcha_type": type_name,
                 "elapsed": round(time.monotonic() - t_start, 1)}
     finally:
         try:
