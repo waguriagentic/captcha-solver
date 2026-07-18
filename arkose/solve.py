@@ -4,7 +4,7 @@ Flow: navigate to page_url → trigger Arkose → intercept gfct (context-level)
 download challenge image → predict via ONNX → encrypt answer (CryptoJS AES-CBC)
 → submit to /fc/ca/ → return token.
 
-Answer submission format (from Negt-dev/Funcaptcha-Solve-RSA RE):
+Answer submission format:
   POST /fc/ca/ with form-urlencoded:
     session_token, game_token, sid, guess, render_type, analytics_tier,
     bio, is_compatibility_mode, ecdata
