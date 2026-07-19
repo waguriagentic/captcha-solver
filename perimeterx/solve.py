@@ -38,10 +38,7 @@ _PX_COOKIE_NAMES = ("_px3", "_pxvid", "_pxde", "pxcts")
 
 
 def _kwargs(proxy: str = None) -> dict:
-    kw = browser_kwargs("TURNSTILE")     # shares TURNSTILE_PROXY / _HEADLESS / _GEOIP
-    if proxy:
-        kw["proxy"] = proxy
-    return kw
+    return browser_kwargs("TURNSTILE", proxy=proxy)
 
 
 async def _gate_visible(page) -> bool:

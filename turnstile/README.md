@@ -167,9 +167,10 @@ Rule of thumb: **2xx → read `solved`; non-2xx → read `detail`. Never both.**
 | Variable             | Default | Description                                     |
 | -------------------- | ------- | ----------------------------------------------- |
 | `PORT`               | `8877`  | HTTP server port                                |
-| `TURNSTILE_HEADLESS` | `1`     | Set to `0` for non-headless (needs Xvfb)        |
-| `TURNSTILE_PROXY`    | —       | Residential proxy URL                           |
+| `BROWSER_HEADLESS`   | `1`     | Global. `0` = headed (needs Xvfb). Service sets `0`. |
 | `TURNSTILE_GEOIP`    | —       | Set to `1` to spoof tz/locale/WebGL to match IP |
+
+Proxy is per-request only: pass `"proxy"` on `POST /solve`. No env fallback.
 
 
 ## Python API
@@ -223,7 +224,7 @@ All available in the project venv at `/opt/captcha-solver/venv/`.
 ## Running
 
 Runs as a systemd service (`captcha-solver.service`, enabled & reboot-safe) —
-the whole `server.py` runs under `xvfb-run` with `TURNSTILE_HEADLESS=0`:
+the whole `server.py` runs under `xvfb-run` with `BROWSER_HEADLESS=0`:
 
 ```bash
 sudo systemctl restart captcha-solver.service   # picks up code changes

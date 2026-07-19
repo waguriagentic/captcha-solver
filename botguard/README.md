@@ -76,8 +76,9 @@ session-bound: replay with the SAME cookies (and same proxy IP if one was used).
 
 | Env var | Default | Purpose |
 |---------|---------|---------|
-| `BOTGUARD_HEADLESS` | `0` (service) / `1` (dev) | `0` = headed (more trusted) |
-| `BOTGUARD_PROXY` | unset | Shared proxy fallback (per-request `proxy` overrides) |
+| `BROWSER_HEADLESS` | `0` (service) / `1` (dev) | Global. `0` = headed (more trusted) |
+
+Proxy is per-request only: pass body field `proxy`. No env fallback.
 
 ## Limits
 

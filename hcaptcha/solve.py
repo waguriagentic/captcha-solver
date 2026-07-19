@@ -67,8 +67,8 @@ _INVISIBLE_PAGE = """<!DOCTYPE html><html><head>
 </body></html>"""
 
 
-def _browser_kwargs() -> dict:
-    return browser_kwargs("HCAPTCHA")
+def _browser_kwargs(proxy: str = None) -> dict:
+    return browser_kwargs("HCAPTCHA", proxy=proxy)
 
 
 # ── Token harvest ─────────────────────────────────────────────────────
@@ -158,7 +158,8 @@ async def _solve_challenge(page) -> bool:
 
 # ── Main solver: checkbox (route-intercept) ───────────────────────────
 
-async def solve_hcaptcha(sitekey: str, url: str, max_attempts: int = 3) -> dict:
+async def solve_hcaptcha(sitekey: str, url: str, max_attempts: int = 3,
+                         proxy: str = None) -> dict:
     """Solve hCaptcha checkbox via route interception.
 
     Renders the widget on an intercepted page, auto-clicks the checkbox
@@ -172,7 +173,7 @@ async def solve_hcaptcha(sitekey: str, url: str, max_attempts: int = 3) -> dict:
         div = f'<div class="h-captcha" data-sitekey="{sitekey}"></div>'
         page_data = HTML_TEMPLATE.replace("<!-- hcaptcha widget -->", div)
 
-        async with await cloakbrowser.launch_async(**_browser_kwargs()) as browser:
+        async with await cloakbrowser.launch_async(**_browser_kwargs(proxy)) as browser:
             page = await browser.new_page()
             try:
                 await page.route(route_glob(url), lambda r: r.fulfill(body=page_data, status=200))
@@ -219,7 +220,7 @@ async def solve_hcaptcha(sitekey: str, url: str, max_attempts: int = 3) -> dict:
 
 # ── Invisible (execute) ────────────────────────────────────────────────
 
-async def solve_hcaptcha_invisible(sitekey: str, url: str) -> dict:
+async def solve_hcaptcha_invisible(sitekey: str, url: str, proxy: str = None) -> dict:
     """Solve hCaptcha invisible via programmatic hcaptcha.execute().
 
     Zero interaction — the token arrives without any challenge. Works for
@@ -230,7 +231,7 @@ async def solve_hcaptcha_invisible(sitekey: str, url: str) -> dict:
     t0 = time.monotonic()
     body = _INVISIBLE_PAGE.replace("__SITEKEY__", sitekey)
     async with _solve_lock:
-        async with await cloakbrowser.launch_async(**_browser_kwargs()) as browser:
+        async with await cloakbrowser.launch_async(**_browser_kwargs(proxy)) as browser:
             page = await browser.new_page()
             try:
                 await page.route(route_glob(url), lambda r: r.fulfill(body=body, status=200))
@@ -280,7 +281,8 @@ async def _inject_hcaptcha_widget(page, sitekey: str) -> None:
 async def solve_hcaptcha_realpage(url: str, sitekey: str = None,
                                    timeout_s: int = 60,
                                    pre_actions: list = None,
-                                   post_fetch: list = None) -> dict:
+                                   post_fetch: list = None,
+                                   proxy: str = None) -> dict:
     """Navigate a real page, execute pre_actions, click hCaptcha checkbox,
     return token + cookies + optional post_fetch results.
 
@@ -295,7 +297,7 @@ async def solve_hcaptcha_realpage(url: str, sitekey: str = None,
     """
     t0 = time.monotonic()
     async with _solve_lock:
-        async with await cloakbrowser.launch_async(**_browser_kwargs()) as browser:
+        async with await cloakbrowser.launch_async(**_browser_kwargs(proxy)) as browser:
             page = await browser.new_page()
             try:
                 await page.goto(url, wait_until="domcontentloaded", timeout=45000)

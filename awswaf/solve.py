@@ -55,10 +55,7 @@ async def _is_cloudfront_block(page) -> bool:
 
 
 def _kwargs(proxy: str = None) -> dict:
-    kw = browser_kwargs("TURNSTILE")   # shares TURNSTILE_PROXY / _HEADLESS / _GEOIP
-    if proxy:
-        kw["proxy"] = proxy            # per-request override wins over env
-    return kw
+    return browser_kwargs("TURNSTILE", proxy=proxy)
 
 
 async def _navigate_and_poll(browser, url, timeout_s, pre_actions):

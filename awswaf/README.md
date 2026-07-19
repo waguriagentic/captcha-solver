@@ -57,9 +57,8 @@ A request that **never solved** → non-2xx with `{detail}` (408 on `timeout_s` 
 `aws-waf-token` is **bound to three things at once**: the **exit IP**, the **JA3/TLS
 fingerprint**, and the **User-Agent** — same binding as `cf_clearance`. To reuse it:
 
-- Replay from the **same proxy IP** you solved on → pass `proxy` (or set
-  `TURNSTILE_PROXY`; this path shares Turnstile's env). A token solved on the server's
-  own IP only works from that IP.
+- Replay from the **same proxy IP** you solved on → pass `proxy` on the solve request.
+  A token solved on the server's own IP only works from that IP.
 - Send the **exact `user_agent`** returned, and a matching `Accept-Language`.
 - Use a client whose **TLS fingerprint matches** (curl-impersonate or another
   CloakBrowser). Plain `requests` / `httpx` / `curl` get re-challenged even with the
@@ -88,11 +87,13 @@ exit IP), returning `solved:false` + `error` rather than hanging. A
 
 ## Environment
 
-Shares the **`TURNSTILE_`** prefix — this path calls `browser_kwargs("TURNSTILE")`:
+Uses `browser_kwargs("TURNSTILE")` — headless is the global `BROWSER_HEADLESS`
+flag; geoip stays on the Turnstile prefix:
 
-- `TURNSTILE_HEADLESS` — `0` runs headful under Xvfb (the systemd unit does this).
-- `TURNSTILE_PROXY` — default exit IP; per-request `proxy` overrides it.
+- `BROWSER_HEADLESS=0` — headful under Xvfb (the systemd unit does this).
 - `TURNSTILE_GEOIP=1` — align timezone/locale/WebGL to the exit IP when proxying.
+
+Proxy is per-request only: pass body field `proxy`. No env fallback.
 
 ## Files
 

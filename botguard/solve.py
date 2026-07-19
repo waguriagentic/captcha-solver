@@ -43,8 +43,8 @@ _SIGNIN_URL = (
 )
 
 
-def _browser_kwargs() -> dict:
-    return browser_kwargs("BOTGUARD")
+def _browser_kwargs(proxy: str = None) -> dict:
+    return browser_kwargs("BOTGUARD", proxy=proxy)
 
 
 async def solve_botguard(
@@ -74,9 +74,7 @@ async def solve_botguard(
     target = url or _SIGNIN_URL
 
     async with _solve_lock:
-        kwargs = _browser_kwargs()
-        if proxy:
-            kwargs["proxy"] = proxy
+        kwargs = _browser_kwargs(proxy)
 
         browser = await cloakbrowser.launch_async(**kwargs)
         grab = {"body": None, "url": None, "headers": None, "rpc": None}

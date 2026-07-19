@@ -197,16 +197,22 @@ class SolveRequest(BaseModel):
     pre_actions: Optional[list[PreAction]] = Field(None, description="Steps to run before solving (real_page).")
     post_fetch: Optional[list[PostFetch]] = Field(None, description="API calls after solving (real_page).")
     proxy: Optional[str] = Field(
-        None, description="Per-request proxy (scheme://user:pass@host:port). Honored for "
-        "type=cloudflare and type=awswaf (overrides the shared TURNSTILE_PROXY env fallback); "
-        "their cookies are IP-bound, so replay from this same proxy IP. For turnstile/recaptcha "
-        "set TURNSTILE_PROXY / RECAPTCHA_PROXY instead — the per-request field is not wired for "
-        "those.")
+        None, description="Per-request proxy (scheme://user:pass@host:port). Honored for ALL "
+        "solver types. No env fallback — omit to solve without proxy. For IP-bound cookies "
+        "(cloudflare/awswaf/datadome/perimeterx/botguard), replay from this same proxy IP.")
 
     # reCAPTCHA-only
     version: Optional[str] = Field(None, description="reCAPTCHA only: v2 | v3 | invisible (default v2).")
     secret: Optional[str] = Field(None, description="reCAPTCHA v3 only: target's secret key, to also return the score.")
     enterprise: Optional[bool] = Field(False, description="reCAPTCHA only: load enterprise.js / grecaptcha.enterprise.")
+    classifier: Optional[str] = Field(
+        None,
+        description="reCAPTCHA tile classifier for image challenges — "
+        "'yolo' (local ONNX, no fallback), 'mistral' (vision API only), "
+        "'hybrid' (ONNX-first + Mistral for unknown targets), "
+        "'auto' or omit (hybrid if ONNX model present, else mistral). "
+        "Used by v2 checkbox and by invisible real_page when a bframe "
+        "image challenge appears. Ignored for pure score-based v3.")
 
     # solve-and-verify (turnstile)
     verify_url: Optional[str] = Field(None, description="Turnstile: verify the token from the same session at this URL.")
@@ -249,7 +255,8 @@ _SOLVE_EXAMPLES = {
     },
     "recaptcha_v2": {
         "summary": "reCAPTCHA v2 checkbox",
-        "value": {"type": "recaptcha", "version": "v2", "sitekey": "6Lf...", "url": "https://target.com/form"},
+        "value": {"type": "recaptcha", "version": "v2", "sitekey": "6Lf...",
+                  "url": "https://target.com/form", "classifier": "hybrid"},
     },
     "hcaptcha": {
         "summary": "hCaptcha (checkbox)",
@@ -380,13 +387,14 @@ async def _dispatch(req: SolveRequest) -> dict:
             if req.verify_url and req.verify_payload:
                 r = await solve_and_verify(
                     req.sitekey, req.verify_url, req.verify_payload, req.action,
-                    cdata=req.cdata, page_url=req.page_url)
+                    cdata=req.cdata, page_url=req.page_url, proxy=req.proxy)
             elif req.real_page:
                 actions, fetches = _extract(req)
                 r = await solve_turnstile_realpage(
-                    req.url, req.sitekey, req.timeout_s, actions, fetches)
+                    req.url, req.sitekey, req.timeout_s, actions, fetches, proxy=req.proxy)
             else:
-                r = await solve_turnstile(req.sitekey, req.url, req.action, req.cdata)
+                r = await solve_turnstile(
+                    req.sitekey, req.url, req.action, req.cdata, proxy=req.proxy)
         except TimeoutError as e:
             r = {"token": "", "error": str(e), "method": "route"}
         return {"type": "turnstile", **r}
@@ -394,13 +402,13 @@ async def _dispatch(req: SolveRequest) -> dict:
     if req.type == "hcaptcha":
         from hcaptcha.solve import solve_hcaptcha, solve_hcaptcha_invisible, solve_hcaptcha_realpage
         if req.action == "invisible":
-            r = await solve_hcaptcha_invisible(req.sitekey, req.url)
+            r = await solve_hcaptcha_invisible(req.sitekey, req.url, proxy=req.proxy)
         elif req.real_page:
             actions, fetches = _extract(req)
             r = await solve_hcaptcha_realpage(
-                req.url, req.sitekey, req.timeout_s, actions, fetches)
+                req.url, req.sitekey, req.timeout_s, actions, fetches, proxy=req.proxy)
         else:
-            r = await solve_hcaptcha(req.sitekey, req.url)
+            r = await solve_hcaptcha(req.sitekey, req.url, proxy=req.proxy)
         return {"type": "hcaptcha", **r}
 
     if req.type == "cloudflare":
@@ -484,6 +492,7 @@ async def _dispatch(req: SolveRequest) -> dict:
     # reCAPTCHA
     from recaptcha.solve import (
         solve_recaptcha_v3, solve_recaptcha_v3_realpage, solve_recaptcha_invisible,
+        solve_recaptcha_invisible_realpage,
         solve_recaptcha_v2, solve_recaptcha_v2_realpage,
     )
     version = req.version or "v2"  # default v2 (checkbox)
@@ -492,21 +501,35 @@ async def _dispatch(req: SolveRequest) -> dict:
             actions, _ = _extract(req)
             r = await solve_recaptcha_v3_realpage(
                 req.url, req.sitekey, req.action or "submit",
-                enterprise=req.enterprise, timeout_s=req.timeout_s, pre_actions=actions)
+                enterprise=req.enterprise, timeout_s=req.timeout_s,
+                pre_actions=actions, proxy=req.proxy)
         else:
             r = await solve_recaptcha_v3(
                 req.sitekey, req.url, req.action or "submit",
-                req.secret, enterprise=req.enterprise)
+                req.secret, enterprise=req.enterprise, proxy=req.proxy)
     elif version == "invisible":
-        r = await solve_recaptcha_invisible(
-            req.sitekey, req.url, req.action or "submit", enterprise=req.enterprise)
+        if req.real_page:
+            actions, _ = _extract(req)
+            r = await solve_recaptcha_invisible_realpage(
+                req.url, req.sitekey, req.action or "submit",
+                enterprise=req.enterprise, timeout_s=req.timeout_s,
+                pre_actions=actions, proxy=req.proxy,
+                classifier=req.classifier)
+        else:
+            r = await solve_recaptcha_invisible(
+                req.sitekey, req.url, req.action or "submit",
+                enterprise=req.enterprise, proxy=req.proxy)
     elif version == "v2":
         if req.real_page:
             actions, fetches = _extract(req)
             r = await solve_recaptcha_v2_realpage(
-                req.url, req.sitekey, actions, fetches, timeout_s=req.timeout_s)
+                req.url, req.sitekey, actions, fetches,
+                timeout_s=req.timeout_s, proxy=req.proxy,
+                classifier=req.classifier)
         else:
-            r = await solve_recaptcha_v2(req.sitekey, req.url, enterprise=req.enterprise)
+            r = await solve_recaptcha_v2(
+                req.sitekey, req.url, enterprise=req.enterprise,
+                proxy=req.proxy, classifier=req.classifier)
     else:
         raise HTTPException(400, f"Unknown version: {version}. Use v3|invisible|v2")
     return {"type": "recaptcha", **r}
@@ -525,8 +548,9 @@ async def solve(req: SolveRequest = Body(..., openapi_examples=_SOLVE_EXAMPLES))
     - **Turnstile** — default route-intercept; `verify_url`+`verify_payload` to
       solve-and-verify; `real_page:true` to drive the live page (pre_actions/post_fetch).
     - **reCAPTCHA** — `version`: `v2` (checkbox + Mistral image fallback, `real_page` supported),
-      `v3` (score; pass `secret` to also return the score), `invisible`. `enterprise:true`
-      for Enterprise keys.
+      `v3` (score; pass `secret` to also return the score; `real_page` supported),
+      `invisible` (execute path; `real_page` supported — required for Enterprise keys that
+      403 `enterprise.js?render=<sitekey>` on stub pages). `enterprise:true` for Enterprise keys.
     - **hCaptcha** — default checkbox (Mistral image/drag fallback); `action:"invisible"`
       for the execute path; `real_page:true` for the live page.
     - **cloudflare** — pass the full-page Cloudflare interstitial (Managed or JS challenge)
@@ -593,6 +617,9 @@ async def solve(req: SolveRequest = Body(..., openapi_examples=_SOLVE_EXAMPLES))
         raise HTTPException(408, f"solve timed out after {req.timeout_s or 60}s")
     except HTTPException:
         raise
+    except ValueError as e:
+        # Bad optional params (e.g. classifier not in yolo|mistral|hybrid|auto)
+        raise HTTPException(400, str(e))
     except Exception as e:
         log.error("Solve failed: %s", e, exc_info=True)
         raise HTTPException(500, str(e))

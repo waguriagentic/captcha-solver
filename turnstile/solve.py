@@ -20,8 +20,8 @@ _TEMPLATE_PATH = Path(__file__).parent / "template.html"
 HTML_TEMPLATE = _TEMPLATE_PATH.read_text()
 
 
-def _browser_kwargs() -> dict:
-    return browser_kwargs("TURNSTILE")
+def _browser_kwargs(proxy: str = None) -> dict:
+    return browser_kwargs("TURNSTILE", proxy=proxy)
 
 
 def _error_codes(body: str) -> list:
@@ -57,7 +57,7 @@ async def _get_turnstile_response_route(page, max_attempts: int = 20) -> str:
 
 
 async def solve_turnstile(sitekey: str, url: str, action: str = None,
-                          cdata: str = None) -> dict:
+                          cdata: str = None, proxy: str = None) -> dict:
     """Solve Turnstile via route interception. Returns {token, expires_in}."""
     t0 = time.monotonic()
     async with _solve_lock:
@@ -68,7 +68,7 @@ async def solve_turnstile(sitekey: str, url: str, action: str = None,
                + '></div>')
         page_data = HTML_TEMPLATE.replace("<!-- cf turnstile -->", div)
 
-        async with await cloakbrowser.launch_async(**_browser_kwargs()) as browser:
+        async with await cloakbrowser.launch_async(**_browser_kwargs(proxy)) as browser:
             page = await browser.new_page()
             try:
                 await page.route(route_glob(target), lambda r: r.fulfill(body=page_data,
@@ -87,7 +87,7 @@ async def solve_turnstile(sitekey: str, url: str, action: str = None,
 async def solve_and_verify(sitekey: str, verify_url: str,
                            verify_payload: dict = None,
                            action: str = None, cdata: str = None,
-                           page_url: str = None) -> dict:
+                           page_url: str = None, proxy: str = None) -> dict:
     """Solve via route-intercept, then verify from the same browser session."""
     t0 = time.monotonic()
     async with _solve_lock:
@@ -98,7 +98,7 @@ async def solve_and_verify(sitekey: str, verify_url: str,
                + '></div>')
         page_data = HTML_TEMPLATE.replace("<!-- cf turnstile -->", div)
 
-        async with await cloakbrowser.launch_async(**_browser_kwargs()) as browser:
+        async with await cloakbrowser.launch_async(**_browser_kwargs(proxy)) as browser:
             page = await browser.new_page()
             try:
                 await page.route(route_glob(target), lambda r: r.fulfill(
@@ -194,7 +194,8 @@ async def _click_turnstile_checkbox(page, attempts: int = 25) -> bool:
 async def solve_turnstile_realpage(url: str, sitekey: str = None,
                                    timeout_s: int = 60,
                                    pre_actions: list = None,
-                                   post_fetch: list = None) -> dict:
+                                   post_fetch: list = None,
+                                   proxy: str = None) -> dict:
     """Navigate a real page, execute pre_actions, click the CF Turnstile checkbox,
     return the token and browser cookies.
 
@@ -215,7 +216,7 @@ async def solve_turnstile_realpage(url: str, sitekey: str = None,
     t0 = time.monotonic()
 
     async with _solve_lock:
-        async with await cloakbrowser.launch_async(**_browser_kwargs()) as browser:
+        async with await cloakbrowser.launch_async(**_browser_kwargs(proxy)) as browser:
             page = await browser.new_page()
             try:
                 await page.goto(url, wait_until="domcontentloaded", timeout=45000)

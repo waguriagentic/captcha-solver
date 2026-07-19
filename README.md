@@ -98,7 +98,7 @@ headless box:
 ExecStart=/usr/bin/xvfb-run -a --server-args="-screen 0 1920x1080x24" \
     /opt/captcha-solver/venv/bin/python3 server.py
 Environment=PORT=8877
-Environment=TURNSTILE_HEADLESS=0
+Environment=BROWSER_HEADLESS=0
 Restart=always
 ```
 
@@ -110,27 +110,24 @@ browser.
 
 - Under the service, the whole process runs inside `xvfb-run`, so every solver
   has a virtual display available.
-- **Turnstile**: the service sets `TURNSTILE_HEADLESS=0` (headful) — needed for
-  the interactive checkbox path. Standalone it defaults to headless
-  (`TURNSTILE_HEADLESS=1`).
-- **reCAPTCHA** runs **headed** by default (`RECAPTCHA_HEADLESS=0`) because
-  headless is more aggressively detected. Run it under a virtual display
-  (e.g. `xvfb-run ./run.sh`) on a headless server, or set
-  `RECAPTCHA_HEADLESS=1` to force headless (lower success rate).
+- **All browser solvers** share one global `BROWSER_HEADLESS` flag
+  (`0` = headed, anything else = headless). Service sets `BROWSER_HEADLESS=0`.
+- Code defaults when the env is unset: Turnstile family headless, interactive
+  solvers (reCAPTCHA / hCaptcha / BotGuard) headed. Headless is more
+  aggressively detected — prefer headed under Xvfb on servers.
 
 ### Environment variables
 
 | Variable                | Default | Effect                                      |
 | ----------------------- | ------- | ------------------------------------------- |
 | `PORT`                  | `8877`  | Listen port                                 |
-| `TURNSTILE_HEADLESS`    | `1`     | `0` = run Turnstile headed                  |
-| `TURNSTILE_PROXY`       | unset   | Proxy URL for Turnstile browser             |
+| `BROWSER_HEADLESS`      | per-solver | Global. `0` = headed for ALL browser solvers. Service sets `0`. |
 | `TURNSTILE_GEOIP`       | unset   | `1` = align browser timezone/locale/WebGL to the proxy exit IP (shared by Turnstile + cloudflare + awswaf) |
-| `RECAPTCHA_HEADLESS`    | `0`     | `1` = run reCAPTCHA headless                |
-| `RECAPTCHA_PROXY`       | unset   | Proxy URL for reCAPTCHA browser             |
 | `RECAPTCHA_GEOIP`       | unset   | `1` = same geo alignment for the reCAPTCHA browser |
 | `SOLVER_ALLOW_PRIVATE`  | unset   | `1` = allow `url`/`verify_url`/`post_fetch` targets on private/loopback/link-local hosts (SSRF guard off). Leave unset in prod. |
 | `SOLVER_PUBLIC_URL`     | (placeholder) | Public base URL shown in the OpenAPI docs (servers dropdown + contact). Set to your real domain at runtime. |
+
+Proxy is **per-request only** (`body.proxy`). No `*_PROXY` env vars.
 
 ### SSRF guard
 
@@ -154,7 +151,7 @@ when you deliberately need to hit an internal target.
   "cdata": "...",                // turnstile customer data bound to token
   "real_page": false,            // solve on the live target page, not a stub
   "timeout_s": 60,
-  "proxy": "http://user:pass@ip:port",  // cloudflare/awswaf only (per-request); turnstile/recaptcha use the TURNSTILE_PROXY / RECAPTCHA_PROXY env vars
+  "proxy": "http://user:pass@ip:port",  // all types; per-request only (no env fallback)
   "pre_actions": [               // run before solving (real_page mode)
     { "type": "click", "selector": "#start", "timeout": 10000 }
   ],
@@ -166,6 +163,14 @@ when you deliberately need to hit an internal target.
   "version": "v2",               // v2 | v3 | invisible
   "secret": "...",               // target's secret key (v3 score check)
   "enterprise": false,
+  "real_page": false,            // v2/v3/invisible: navigate live origin (needed for Enterprise invisible that 403s enterprise.js?render=<sitekey>)
+  "classifier": "auto",          // tile classifier: auto|hybrid|yolo|mistral
+                                 //   auto = ONNX hybrid if model present, else Mistral
+                                 //   hybrid = ONNX-first + Mistral for unknown targets
+                                 //   yolo = pure local ONNX (fails if model missing)
+                                 //   mistral = pure Mistral vision (skip ONNX)
+                                 //   used by v2 checkbox + invisible real_page bframe
+                                 //   ignored for pure score-based v3
 
   // turnstile solve-and-verify
   "verify_url": "https://target.com/verify",
@@ -317,9 +322,8 @@ Response (extras on top of the usual envelope):
 `cf_clearance` is **bound to four things at once**: the **exit IP**, the **JA3/TLS
 fingerprint**, the **User-Agent**, and the specific challenge. To reuse it:
 
-- Replay from the **same proxy IP** you solved on → pass `proxy` (or set
-  `TURNSTILE_PROXY`; the cloudflare path shares Turnstile's env). A cookie solved on
-  the server's own IP only works from that IP.
+- Replay from the **same proxy IP** you solved on → pass `proxy` on the solve request.
+  A cookie solved on the server's own IP only works from that IP.
 - Send the **exact `user_agent`** returned, and a matching `Accept-Language`.
 - Use a client whose **TLS fingerprint matches** (curl-impersonate or another
   CloakBrowser). Plain `requests` / `httpx` / `curl` get **re-challenged** even with
@@ -333,7 +337,7 @@ fingerprint**, the **User-Agent**, and the specific challenge. To reuse it:
   (and 408 if it exceeds `timeout_s`), it does not hang.
 - **Short TTL.** `cf_clearance` typically lives ~15–30 min (site-configurable) — treat
   it as ephemeral and re-solve on expiry.
-- **Needs a headful browser.** Set `TURNSTILE_HEADLESS=0` (run under Xvfb — the systemd
+- **Needs a headful browser.** Set `BROWSER_HEADLESS=0` (run under Xvfb — the systemd
   unit already does) so the Managed-Challenge checkbox click works. Pair with
   `TURNSTILE_GEOIP=1` when proxying, so timezone/locale/WebGL align to the exit IP.
 

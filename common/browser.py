@@ -79,17 +79,22 @@ async def run_pre_actions(page, actions: list):
         await asyncio.sleep(0.5)
 
 
-def browser_kwargs(prefix: str) -> dict:
-    """Browser-trust levers, env-configurable per solver.
+def browser_kwargs(prefix: str, proxy: str = None) -> dict:
+    """Browser-trust levers shared by all browser solvers.
 
-    prefix is TURNSTILE | RECAPTCHA | HCAPTCHA. Turnstile defaults headless=1;
-    the interactive-checkbox solvers (recaptcha/hcaptcha) default headless=0.
+    Headless is GLOBAL via BROWSER_HEADLESS (all providers share it).
+    Code defaults when unset: Turnstile family headless=1; interactive
+    checkbox solvers (recaptcha/hcaptcha/botguard) headless=0.
+    Service sets BROWSER_HEADLESS=0 so every solver runs headed under Xvfb.
+
+    Proxy is per-request only — pass `proxy` explicitly. No env fallback.
+    GEOIP stays per-prefix ({PREFIX}_GEOIP) because only proxy-aligned paths need it.
     """
     default_headless = "1" if prefix == "TURNSTILE" else "0"
     kw = {"humanize": True,
-          "headless": os.getenv(f"{prefix}_HEADLESS", default_headless) != "0"}
-    if os.getenv(f"{prefix}_PROXY"):
-        kw["proxy"] = os.environ[f"{prefix}_PROXY"]
+          "headless": os.getenv("BROWSER_HEADLESS", default_headless) != "0"}
+    if proxy:
+        kw["proxy"] = proxy
     if os.getenv(f"{prefix}_GEOIP") == "1":
         kw["geoip"] = True
     return kw

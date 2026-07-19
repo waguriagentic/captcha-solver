@@ -36,10 +36,7 @@ _DD_ENDPOINT = "api-js.datadome.co/js/"
 
 
 def _kwargs(proxy: str = None) -> dict:
-    kw = browser_kwargs("TURNSTILE")     # shares TURNSTILE_PROXY / _HEADLESS / _GEOIP
-    if proxy:
-        kw["proxy"] = proxy              # per-request override wins
-    return kw
+    return browser_kwargs("TURNSTILE", proxy=proxy)
 
 
 def _parse_dd_cookie(body: str) -> dict:

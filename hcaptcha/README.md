@@ -98,8 +98,8 @@ hCaptcha always triggers a challenge because:
 
 ### Avoiding challenges in production
 
-- **Residential proxy** (`HCAPTCHA_PROXY`) + session warming (real cookies)
-- **Headed** mode under Xvfb (`HCAPTCHA_HEADLESS=0`)
+- **Residential proxy** (body `proxy`) + session warming (real cookies)
+- **Headed** mode under Xvfb (`BROWSER_HEADLESS=0`)
 - **Invisible sitekey** (token via `hcaptcha.execute()`, zero interaction)
 - **Real page solver** with natural pre_actions
 
@@ -138,10 +138,11 @@ that ran but failed → `200 {solved:false, error}`; a request that never solved
 
 | Variable             | Default | Description                                     |
 | -------------------- | ------- | ----------------------------------------------- |
-| `HCAPTCHA_HEADLESS`  | `0`     | `0` = headed (needs Xvfb) |
-| `HCAPTCHA_PROXY`     | —       | Residential proxy URL |
+| `BROWSER_HEADLESS`   | `0`     | Global. `0` = headed (needs Xvfb) |
 | `HCAPTCHA_GEOIP`     | —       | `1` spoof tz/locale/WebGL |
 | `HCAPTCHA_MISTRAL_MODEL` | `mistral-medium-latest` | Vision model |
+
+Proxy is per-request only: pass `"proxy"` on `POST /solve`. No env fallback.
 
 ## Files
 
@@ -161,8 +162,8 @@ reCAPTCHA solver.
 ## Running
 
 Runs as a systemd service (`captcha-solver.service`, enabled & reboot-safe) —
-`server.py` runs under `xvfb-run`, so hCaptcha's default headed mode
-(`HCAPTCHA_HEADLESS=0`) has a virtual display:
+`server.py` runs under `xvfb-run`, so headed mode
+(`BROWSER_HEADLESS=0`) has a virtual display:
 
 ```bash
 sudo systemctl restart captcha-solver.service   # picks up code changes

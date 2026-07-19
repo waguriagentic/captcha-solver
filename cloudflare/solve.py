@@ -10,7 +10,7 @@ interstitial markers are gone, bounded by timeout_s.
 
 cf_clearance is bound to IP + JA3/TLS + User-Agent + the challenge. To replay it the
 client MUST use the SAME proxy IP and the returned user_agent over a matching TLS
-stack. Hence proxy passthrough (reuses TURNSTILE_PROXY) and the returned warning.
+stack. Hence proxy passthrough (per-request `proxy`) and the returned warning.
 """
 import asyncio
 import logging
@@ -52,10 +52,7 @@ async def _is_interstitial(page) -> bool:
 
 
 def _kwargs(proxy: str = None) -> dict:
-    kw = browser_kwargs("TURNSTILE")   # shares TURNSTILE_PROXY / _HEADLESS / _GEOIP
-    if proxy:
-        kw["proxy"] = proxy            # per-request override wins over env
-    return kw
+    return browser_kwargs("TURNSTILE", proxy=proxy)
 
 
 async def solve_cf_clearance(url: str, proxy: str = None, timeout_s: int = 60,

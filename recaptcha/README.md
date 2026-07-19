@@ -47,6 +47,20 @@ curl -X POST http://localhost:8877/solve \
   -d '{"type":"recaptcha","version":"invisible","sitekey":"6Lc...","url":"https://target.com/login"}'
 ```
 
+**Invisible on hard origins (e.g. Webshare):** Webshare loads standard
+`api.js?render=explicit` (NOT enterprise). Use `real_page:true` so the solver
+navigates the live page, waits for page-native `grecaptcha`, and calls
+`execute()`. If Google escalates to a bframe image challenge, the solver
+handles it with the tile classifier (same as v2 checkbox).
+
+```bash
+curl -X POST http://localhost:8877/solve \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"type":"recaptcha","version":"invisible","enterprise":false,"real_page":true,
+       "sitekey":"6LeHZ6UUAAAAAKat_YS--O2tj_by3gv3r_l03j9d",
+       "url":"https://dashboard.webshare.io/register","timeout_s":120}'
+```
+
 ### 2b. reCAPTCHA Enterprise (score-based) — `enterprise: true` ✅
 
 **Client-side, Enterprise score keys are identical to v3.** The only differences:
@@ -59,6 +73,9 @@ same zero-interaction token mint — verified end-to-end (token in ~4s). Add
 curl -X POST http://localhost:8877/solve \
   -d '{"type":"recaptcha","version":"v3","enterprise":true,"sitekey":"6Lc...","url":"https://target.com","action":"login"}'
 ```
+
+If route-intercept fails with `enterprise.js?render=<sitekey>` HTTP 403, switch to
+`real_page:true` (see invisible example above).
 
 **Score reading differs server-side.** Enterprise scores are *not* read via the public
 `siteverify` endpoint — the site owner POSTs the token to the Cloud
@@ -88,19 +105,35 @@ the old solver).
 
 - **Low-risk session → no challenge:** checkbox goes straight to `checked`, token
   returned. This is the real win, the same mechanism the Turnstile solver exploits.
-- **Challenge opens → image-solve (Mistral vision):** the image grid opens fine (only
-  the *audio* path is IP-blocked). The solver screenshots the grid, slices it into
-  tiles, classifies each tile yes/no against the target via a **shared Mistral vision key
-  pool** (`common/apikey.txt`, thousands of keys, round-robin + auto-failover), clicks the
-  matches, and submits. Handles 3×3, 4×4, and **dynamic** grids (re-classifies
-  reloaded tiles until a round finds nothing new). Tile classification is bounded to a
-  small concurrency (semaphore) to avoid a thread-pool / rate-limit herd. Vision is
-  never 100% on reCAPTCHA's deliberately-ambiguous images — success is judged by
-  reCAPTCHA accepting the submit, and the caller retries.
+- **Challenge opens → image-solve:** the image grid opens fine (only the *audio* path
+  is IP-blocked). The solver screenshots the grid, slices it into tiles, classifies
+  each tile yes/no against the target, clicks the matches, and submits. Handles 3×3,
+  4×4, and **dynamic** grids (re-classifies reloaded tiles until a round finds nothing
+  new). Tile classification is bounded to a small concurrency (semaphore) to avoid a
+  thread-pool / rate-limit herd. Classification is never 100% on reCAPTCHA's
+  deliberately-ambiguous images — success is judged by reCAPTCHA accepting the submit,
+  and the caller retries.
 
 > The Whisper-based **audio fallback was removed** — it was dead code (no callers) and
 > the audio button is reliably IP-blocked (*"Your computer or network may be sending
 > automated queries"*). This also drops the `whisper` + `ffmpeg` dependency.
+
+### Tile classifier (`classifier` body param)
+
+Used by v2 checkbox image challenges **and** by invisible `real_page` when Google
+escalates to a bframe image challenge. Ignored for pure score-based v3. Default
+when omitted = `auto`.
+
+| Value | Behavior |
+| ----- | -------- |
+| `auto` / omit | ONNX hybrid if `models/recaptcha_cls_s.onnx` present, else pure Mistral |
+| `hybrid` | ONNX-first for the 14 trained classes; Mistral fallback for unknown targets |
+| `yolo` | Pure local ONNX — no Mistral. Fails if model missing |
+| `mistral` | Pure Mistral vision API — skip ONNX |
+
+`HybridClassifier` maps noisy prompt strings (`buses` / `a bus` / `traffic lights`) onto
+the 14 ONNX class labels; out-of-vocab targets fall through to Mistral so coverage never
+regresses below the pre-ONNX baseline.
 
 ### Mistral key pool
 
@@ -112,9 +145,17 @@ for a **60-second wall-clock cooldown**). Model is `mistral-medium-latest` by de
 on the gateway in use, so it can't see images.
 
 ```bash
-# route-intercept (fast)
+# route-intercept (fast) — auto classifier
 curl -X POST http://localhost:8877/solve \
   -d '{"type":"recaptcha","version":"v2","sitekey":"6Lf...","url":"https://target.com/form"}'
+
+# force Mistral-only (skip ONNX)
+curl -X POST http://localhost:8877/solve \
+  -d '{"type":"recaptcha","version":"v2","sitekey":"6Lf...","url":"https://target.com/form","classifier":"mistral"}'
+
+# force YOLO/ONNX-only (no Mistral fallback)
+curl -X POST http://localhost:8877/solve \
+  -d '{"type":"recaptcha","version":"v2","sitekey":"6Lf...","url":"https://target.com/form","classifier":"yolo"}'
 
 # real page (navigates the actual site; supports pre_actions + post_fetch)
 curl -X POST http://localhost:8877/solve \
@@ -154,27 +195,33 @@ crash). Rule of thumb: **2xx → read `solved`; non-2xx → read `detail` (never
 
 | Variable             | Default | Description                                       |
 | -------------------- | ------- | ------------------------------------------------- |
-| `RECAPTCHA_HEADLESS`       | `0`                    | `0` = headed (needs Xvfb); headless is heavily penalised |
-| `RECAPTCHA_PROXY`          | —                      | Residential proxy URL (improves score / low-risk session) |
+| `BROWSER_HEADLESS`         | `0`                    | Global. `0` = headed (needs Xvfb); headless is heavily penalised |
 | `RECAPTCHA_GEOIP`          | —                      | `1` to spoof tz/locale/WebGL to match the IP     |
 | `RECAPTCHA_MISTRAL_MODEL`  | `mistral-medium-latest`| Vision model for image-solve                     |
+
+Proxy is per-request only: pass `"proxy": "http://user:pass@ip:port"` on `POST /solve`. No env fallback.
 
 ## Python API
 
 ```python
 import asyncio
-from recaptcha import (solve_recaptcha_v3, solve_recaptcha_invisible,
+from recaptcha import (solve_recaptcha_v3, solve_recaptcha_v3_realpage,
+                       solve_recaptcha_invisible, solve_recaptcha_invisible_realpage,
                        solve_recaptcha_v2, solve_recaptcha_v2_realpage)
 
 asyncio.run(solve_recaptcha_v3(sitekey="6Lc...", url="https://target.com", action="submit"))
 asyncio.run(solve_recaptcha_v2(sitekey="6Lf...", url="https://target.com/form"))
+asyncio.run(solve_recaptcha_invisible_realpage(
+    url="https://dashboard.webshare.io/register",
+    sitekey="6LeHZ6UUAAAAAKat_YS--O2tj_by3gv3r_l03j9d",
+    enterprise=True, timeout_s=120))
 ```
 
 ## Files
 
 | File             | Description                                        |
 | ---------------- | -------------------------------------------------- |
-| `solve.py`       | All modes: v3/invisible (execute), v2 (checkbox+image), v2 real-page |
+| `solve.py`       | All modes: v3/invisible (execute + realpage), v2 (checkbox+image), v2 real-page |
 | `image_solve.py` | Image-challenge solver (screenshot → tiles → vision → click → verify) |
 | `template.html`  | v2 widget page (`.g-recaptcha` + api.js / enterprise.js) |
 | `__init__.py`    | Package exports                                    |
@@ -192,8 +239,8 @@ the audio path was removed.)
 ## Running
 
 Runs as a systemd service (`captcha-solver.service`, enabled & reboot-safe) —
-`server.py` runs under `xvfb-run`, so reCAPTCHA's default headed mode
-(`RECAPTCHA_HEADLESS=0`) has a virtual display:
+`server.py` runs under `xvfb-run`, so headed mode
+(`BROWSER_HEADLESS=0`) has a virtual display:
 
 ```bash
 sudo systemctl restart captcha-solver.service   # picks up code changes

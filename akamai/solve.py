@@ -81,10 +81,7 @@ def _abck_validated(abck_value: str) -> bool:
 
 
 def _kwargs(proxy: str = None) -> dict:
-    kw = browser_kwargs("TURNSTILE")   # shares TURNSTILE_PROXY / _HEADLESS / _GEOIP
-    if proxy:
-        kw["proxy"] = proxy
-    return kw
+    return browser_kwargs("TURNSTILE", proxy=proxy)
 
 
 async def solve_akamai(url: str, proxy: str = None, timeout_s: int = 90,

@@ -62,9 +62,8 @@ solver crash). Rule of thumb: **2xx → read `solved`; non-2xx → read `detail`
 `cf_clearance` is **bound to four things at once**: the **exit IP**, the **JA3/TLS
 fingerprint**, the **User-Agent**, and the specific challenge. To reuse it:
 
-- Replay from the **same proxy IP** you solved on → pass `proxy` (or set
-  `TURNSTILE_PROXY`; this path shares Turnstile's env). A cookie solved on the server's
-  own IP only works from that IP.
+- Replay from the **same proxy IP** you solved on → pass `proxy` on the solve request.
+  A cookie solved on the server's own IP only works from that IP.
 - Send the **exact `user_agent`** returned, and a matching `Accept-Language`.
 - Use a client whose **TLS fingerprint matches** (curl-impersonate or another
   CloakBrowser). Plain `requests` / `httpx` / `curl` get re-challenged even with the
@@ -83,12 +82,14 @@ fingerprint**, the **User-Agent**, and the specific challenge. To reuse it:
 
 ## Environment
 
-Shares the **`TURNSTILE_`** prefix — this path calls `browser_kwargs("TURNSTILE")`:
+Uses `browser_kwargs("TURNSTILE")` — headless is the global `BROWSER_HEADLESS`
+flag; geoip stays on the Turnstile prefix:
 
-- `TURNSTILE_HEADLESS` — `0` runs headful under Xvfb (the systemd unit does this); needed
+- `BROWSER_HEADLESS=0` — headful under Xvfb (the systemd unit does this); needed
   so the Managed-Challenge checkbox click works.
-- `TURNSTILE_PROXY` — default exit IP; per-request `proxy` overrides it.
 - `TURNSTILE_GEOIP=1` — align timezone/locale/WebGL to the exit IP when proxying.
+
+Proxy is per-request only: pass body field `proxy`. No env fallback.
 
 ## Files
 
