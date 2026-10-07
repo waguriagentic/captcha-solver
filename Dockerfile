@@ -89,10 +89,17 @@ WORKDIR /app
 # PYPI_INDEX_URL is an optional mirror. PyPI's CDN can degrade to single-digit
 # KB/s on some networks (measured 7.9 kB/s on a 6.9 MB wheel, ~15 minutes for
 # one package), which dominates the build. A nearby mirror removes it.
+#
+# PYPI_EXTRA_INDEX_URL adds a fallback. A single mirror is itself a network
+# dependency: one dropped connection mid-download fails the build. pip retries
+# the same index with --retries, but it will not try a different one, so a
+# second index turns a hard failure into a retry elsewhere.
 ARG PYPI_INDEX_URL=""
+ARG PYPI_EXTRA_INDEX_URL=""
 COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir --retries 8 --timeout 60 \
+RUN pip install --no-cache-dir --retries 10 --timeout 60 \
       ${PYPI_INDEX_URL:+--index-url $PYPI_INDEX_URL} \
+      ${PYPI_EXTRA_INDEX_URL:+--extra-index-url $PYPI_EXTRA_INDEX_URL} \
       fastapi uvicorn pydantic pillow \
       onnxruntime opencv-python-headless numpy \
       geoip2 socksio \
