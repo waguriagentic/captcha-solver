@@ -57,6 +57,7 @@ services:
       # well-connected host).
       args:
         DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
+        PYPI_INDEX_URL: ${PYPI_INDEX_URL:-}
     image: captcha-solver:coolify
 
     # Production configuration. Absolute, because Coolify's project directory

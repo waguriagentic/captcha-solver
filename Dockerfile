@@ -85,8 +85,14 @@ WORKDIR /app
 # launch behaviour (flags, geoip resolution) without the binary changing.
 # geoip2 + socksio are the wrapper's `geoip` extra: a geoip=True launch raises
 # before any browser starts when they are missing.
+#
+# PYPI_INDEX_URL is an optional mirror. PyPI's CDN can degrade to single-digit
+# KB/s on some networks (measured 7.9 kB/s on a 6.9 MB wheel, ~15 minutes for
+# one package), which dominates the build. A nearby mirror removes it.
+ARG PYPI_INDEX_URL=""
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir --retries 8 --timeout 60 \
+      ${PYPI_INDEX_URL:+--index-url $PYPI_INDEX_URL} \
       fastapi uvicorn pydantic pillow \
       onnxruntime opencv-python-headless numpy \
       geoip2 socksio \
