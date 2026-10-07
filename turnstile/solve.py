@@ -13,9 +13,11 @@ from pathlib import Path
 import cloakbrowser
 
 from common.browser import browser_kwargs, run_pre_actions, run_post_fetch, fetch_from_page, route_glob
+from common.concurrency import solve_slot
 
 log = logging.getLogger(__name__)
-_solve_lock = asyncio.Lock()
+# Concurrency is bounded by common.concurrency.solve_slot() — the previous
+# per-solver asyncio.Lock serialized every solve.
 _TEMPLATE_PATH = Path(__file__).parent / "template.html"
 HTML_TEMPLATE = _TEMPLATE_PATH.read_text()
 
@@ -60,7 +62,7 @@ async def solve_turnstile(sitekey: str, url: str, action: str = None,
                           cdata: str = None, proxy: str = None) -> dict:
     """Solve Turnstile via route interception. Returns {token, expires_in}."""
     t0 = time.monotonic()
-    async with _solve_lock:
+    async with solve_slot():
         target = url
         div = (f'<div class="cf-turnstile" data-sitekey="{sitekey}"'
                + (f' data-action="{action}"' if action else '')
@@ -90,7 +92,7 @@ async def solve_and_verify(sitekey: str, verify_url: str,
                            page_url: str = None, proxy: str = None) -> dict:
     """Solve via route-intercept, then verify from the same browser session."""
     t0 = time.monotonic()
-    async with _solve_lock:
+    async with solve_slot():
         target = page_url or verify_url
         div = (f'<div class="cf-turnstile" data-sitekey="{sitekey}"'
                + (f' data-action="{action}"' if action else '')
@@ -215,7 +217,7 @@ async def solve_turnstile_realpage(url: str, sitekey: str = None,
     """
     t0 = time.monotonic()
 
-    async with _solve_lock:
+    async with solve_slot():
         async with await cloakbrowser.launch_async(**_browser_kwargs(proxy)) as browser:
             page = await browser.new_page()
             try:

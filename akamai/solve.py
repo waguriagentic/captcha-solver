@@ -29,9 +29,11 @@ import time
 import cloakbrowser
 
 from common.browser import browser_kwargs, run_pre_actions, run_post_fetch
+from common.concurrency import solve_slot
 
 log = logging.getLogger(__name__)
-_solve_lock = asyncio.Lock()
+# Concurrency is bounded by common.concurrency.solve_slot() — the previous
+# per-solver asyncio.Lock serialized every solve.
 
 # In-page: find the sensor global (usually `bmak`) and fire get_telemetry() so the
 # sensor serializes + POSTs a fresh payload. Returns telemetry length for logging.
@@ -89,7 +91,7 @@ async def solve_akamai(url: str, proxy: str = None, timeout_s: int = 90,
     """Load an Akamai-fronted URL, drive the bmak sensor until _abck validates,
     and return _abck + everything needed to replay it from the same IP/UA."""
     t0 = time.monotonic()
-    async with _solve_lock:
+    async with solve_slot():
         async with await cloakbrowser.launch_async(**_kwargs(proxy)) as browser:
             page = await browser.new_page()
             try:

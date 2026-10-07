@@ -24,9 +24,11 @@ import cloakbrowser
 
 from common.mistral import KeyPool
 from common.browser import browser_kwargs, run_pre_actions, run_post_fetch, route_glob
+from common.concurrency import solve_slot
 
 log = logging.getLogger(__name__)
-_solve_lock = asyncio.Lock()
+# Concurrency is bounded by common.concurrency.solve_slot() — the previous
+# per-solver asyncio.Lock serialized every solve.
 _TEMPLATE_PATH = Path(__file__).parent / "template.html"
 HTML_TEMPLATE = _TEMPLATE_PATH.read_text()
 
@@ -169,7 +171,7 @@ async def solve_hcaptcha(sitekey: str, url: str, max_attempts: int = 3,
     Returns {token, expires_in, elapsed, method} or {error, elapsed}.
     """
     t0 = time.monotonic()
-    async with _solve_lock:
+    async with solve_slot():
         div = f'<div class="h-captcha" data-sitekey="{sitekey}"></div>'
         page_data = HTML_TEMPLATE.replace("<!-- hcaptcha widget -->", div)
 
@@ -230,7 +232,7 @@ async def solve_hcaptcha_invisible(sitekey: str, url: str, proxy: str = None) ->
     """
     t0 = time.monotonic()
     body = _INVISIBLE_PAGE.replace("__SITEKEY__", sitekey)
-    async with _solve_lock:
+    async with solve_slot():
         async with await cloakbrowser.launch_async(**_browser_kwargs(proxy)) as browser:
             page = await browser.new_page()
             try:
@@ -296,7 +298,7 @@ async def solve_hcaptcha_realpage(url: str, sitekey: str = None,
     Use __TOKEN__ placeholder in post_fetch bodies to inject the solved token.
     """
     t0 = time.monotonic()
-    async with _solve_lock:
+    async with solve_slot():
         async with await cloakbrowser.launch_async(**_browser_kwargs(proxy)) as browser:
             page = await browser.new_page()
             try:

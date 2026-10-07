@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "recipe": {
+    "name": "Captcha Solver",
+    "kind": "python",
+    "bootstrap": [],
+    "build": [],
+    "test": [
+      "env -u PYTHONPATH -u PYTHONHOME .venv/bin/python preflight.py && env -u PYTHONPATH -u PYTHONHOME .venv/bin/python -c \"import ast,pathlib; [ast.parse(p.read_text()) for p in pathlib.Path('.').glob('*/*.py')]\" && echo SYNTAX_OK",
+      "env -u PYTHONPATH -u PYTHONHOME .venv/bin/python -c \"import sys; sys.path.insert(0,'.'); import turnstile.solve, cloudflare.solve, awswaf.solve, botguard.solve, datadome.solve, perimeterx.solve, akamai.solve, recaptcha.solve, hcaptcha.solve; print('IMPORTS_OK')\""
+    ],
+    "start": null,
+    "port": null,
+    "readinessPath": "/",
+    "evidence": [
+      "preflight.py asserts the browser build this solver resolves is present, executable and launchable, and honours CLOAKBROWSER_BINARY_PATH when set.",
+      "Syntax phase: all *.py under the solver packages must parse; a bad edit in a solver would otherwise only surface when that captcha type is requested.",
+      "Import phase: every browser solver module must import cleanly; this catches the concurrency refactor (solve_slot import) breaking a module.",
+      "No live /solve call in the recipe: solving needs network + a real captcha target, is slow and non-deterministic, and the service runs as a systemd unit. Live checks live in tools/bench_parallel.py and tools/smoke_all_types.py, run manually.",
+      ".venv is python 3.14 with --system-site-packages (needs the user-site cloakbrowser wrapper)."
+    ]
+  },
+  "updatedAt": "2026-10-07T09:00:00+07:00"
+}

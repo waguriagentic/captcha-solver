@@ -28,9 +28,11 @@ import time
 import cloakbrowser
 
 from common.browser import browser_kwargs
+from common.concurrency import solve_slot
 
 log = logging.getLogger(__name__)
-_solve_lock = asyncio.Lock()
+# Concurrency is bounded by common.concurrency.solve_slot() — the previous
+# per-solver asyncio.Lock serialized every solve.
 
 _DD_ENDPOINT = "api-js.datadome.co/js/"
 
@@ -75,7 +77,7 @@ async def solve_datadome(url: str = None, referer: str = None,
 
     captured: dict = {"cookie": None, "endpoint_status": None, "raw_json": None}
 
-    async with _solve_lock:
+    async with solve_slot():
         async with await cloakbrowser.launch_async(**_kwargs(proxy)) as browser:
             ctx = await browser.new_context()
             page = await ctx.new_page()

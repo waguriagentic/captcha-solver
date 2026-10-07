@@ -21,9 +21,11 @@ import time
 import cloakbrowser
 
 from common.browser import browser_kwargs, run_pre_actions, run_post_fetch
+from common.concurrency import solve_slot
 
 log = logging.getLogger(__name__)
-_solve_lock = asyncio.Lock()
+# Concurrency is bounded by common.concurrency.solve_slot() — the previous
+# per-solver asyncio.Lock serialized every solve.
 
 # CloudFront/WAF hard-blocks (datacenter IP, geo-block) serve an error page whose title
 # matches one of these — the WAF JS never runs, so detect early and fail fast. Bare
@@ -96,7 +98,7 @@ async def solve_aws_waf(url: str, proxy: str = None, timeout_s: int = 60,
     context (helps only if a proxy is set / rotates).
     """
     t0 = time.monotonic()
-    async with _solve_lock:
+    async with solve_slot():
         tok = cookies = ua = None
         lang = "en-US"
         for attempt in (1, 2):

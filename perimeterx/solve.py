@@ -30,9 +30,11 @@ import time
 import cloakbrowser
 
 from common.browser import browser_kwargs
+from common.concurrency import solve_slot
 
 log = logging.getLogger(__name__)
-_solve_lock = asyncio.Lock()
+# Concurrency is bounded by common.concurrency.solve_slot() — the previous
+# per-solver asyncio.Lock serialized every solve.
 
 _PX_COOKIE_NAMES = ("_px3", "_pxvid", "_pxde", "pxcts")
 
@@ -123,7 +125,7 @@ async def solve_perimeterx(url: str = None, render_flow: str = None,
     ev = {"human_seen": False, "gate_reached": False, "actuated": False,
           "px3_before": None, "px3_after": None, "attempts": 0}
 
-    async with _solve_lock:
+    async with solve_slot():
         async with await cloakbrowser.launch_async(**_kwargs(proxy)) as browser:
             ctx = await browser.new_context()
             page = await ctx.new_page()

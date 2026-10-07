@@ -26,6 +26,7 @@ from pathlib import Path
 import cloakbrowser
 
 from common.browser import browser_kwargs, run_pre_actions, run_post_fetch, route_glob
+from common.concurrency import solve_slot
 from common.mistral import KeyPool
 from .image_solve import solve_image_challenge
 
@@ -94,7 +95,8 @@ def _get_keypool(classifier: str = None):
 _TEMPLATE_PATH = Path(__file__).parent / "template.html"
 _HTML_TEMPLATE = _TEMPLATE_PATH.read_text()
 
-_solve_lock = asyncio.Lock()
+# Concurrency is bounded by common.concurrency.solve_slot() — the previous
+# per-solver asyncio.Lock serialized every solve.
 
 # Address the iframes by title so frame_locator re-resolves them on every action —
 # immune to reCAPTCHA reloading the iframe.
@@ -145,7 +147,7 @@ async def _solve_via_execute(sitekey: str, url: str, action: str,
     ns = "grecaptcha.enterprise" if enterprise else "grecaptcha"
     body = (_V3_PAGE.replace("__LIB__", lib).replace("__NS__", ns)
             .replace("__SITEKEY__", sitekey).replace("__ACTION__", action))
-    async with _solve_lock:
+    async with solve_slot():
         async with await cloakbrowser.launch_async(**_browser_kwargs(proxy)) as browser:
             page = await browser.new_page()
             try:
@@ -272,7 +274,7 @@ async def solve_recaptcha_v3_realpage(url: str, sitekey: str, action: str = "sub
     t0 = time.monotonic()
     lib = "enterprise.js" if enterprise else "api.js"
     ns = "enterprise" if enterprise else "standard"
-    async with _solve_lock:
+    async with solve_slot():
         async with await cloakbrowser.launch_async(**_browser_kwargs(proxy)) as browser:
             page = await browser.new_page()
             try:
@@ -443,7 +445,7 @@ async def solve_recaptcha_invisible_realpage(
     method = "invisible-enterprise-realpage" if enterprise else "invisible-realpage"
     # Resolve once so a bad classifier fails fast (before browser launch).
     keypool = _get_keypool(classifier)
-    async with _solve_lock:
+    async with solve_slot():
         async with await cloakbrowser.launch_async(**_browser_kwargs(proxy)) as browser:
             page = await browser.new_page()
             try:
@@ -579,7 +581,7 @@ async def solve_recaptcha_v2(sitekey: str, url: str,
     # Resolve once so a bad classifier fails fast (before browser launch).
     keypool = _get_keypool(classifier)
 
-    async with _solve_lock:
+    async with solve_slot():
         async with await cloakbrowser.launch_async(**_browser_kwargs(proxy)) as browser:
             page = await browser.new_page()
             try:
@@ -657,7 +659,7 @@ async def solve_recaptcha_v2_realpage(url: str, sitekey: str = None,
     t0 = time.monotonic()
     # Resolve once so a bad classifier fails fast (before browser launch).
     keypool = _get_keypool(classifier)
-    async with _solve_lock:
+    async with solve_slot():
         async with await cloakbrowser.launch_async(**_browser_kwargs(proxy)) as browser:
             page = await browser.new_page()
             try:

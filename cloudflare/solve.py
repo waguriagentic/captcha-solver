@@ -19,10 +19,12 @@ import time
 import cloakbrowser
 
 from common.browser import browser_kwargs, run_pre_actions, run_post_fetch
+from common.concurrency import solve_slot
 from turnstile.solve import _click_turnstile_checkbox
 
 log = logging.getLogger(__name__)
-_solve_lock = asyncio.Lock()
+# Concurrency is bounded by common.concurrency.solve_slot() — the previous
+# per-solver asyncio.Lock serialized every solve.
 
 # One JS probe covers both Managed and JS Challenge interstitials. challenge-form +
 # _cf_chl_opt blob appear on both variants; the turnstile iframe is Managed-only.
@@ -60,7 +62,7 @@ async def solve_cf_clearance(url: str, proxy: str = None, timeout_s: int = 60,
     """Navigate a CF-protected URL, pass the interstitial (Managed click or JS wait),
     and return cf_clearance + everything needed to replay it from the same IP/UA."""
     t0 = time.monotonic()
-    async with _solve_lock:
+    async with solve_slot():
         async with await cloakbrowser.launch_async(**_kwargs(proxy)) as browser:
             page = await browser.new_page()
             try:

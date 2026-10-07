@@ -24,9 +24,11 @@ from typing import Optional
 import cloakbrowser
 
 from common.browser import browser_kwargs, run_pre_actions
+from common.concurrency import solve_slot
 
 log = logging.getLogger(__name__)
-_solve_lock = asyncio.Lock()
+# Concurrency is bounded by common.concurrency.solve_slot() — the previous
+# per-solver asyncio.Lock serialized every solve.
 
 # A BotGuard token in the f.req array is a long base64url blob. 200+ chars is the
 # reliable floor (real tokens seen: 1680-1850 chars for password-step, ~1800 for
@@ -73,7 +75,7 @@ async def solve_botguard(
     t0 = time.monotonic()
     target = url or _SIGNIN_URL
 
-    async with _solve_lock:
+    async with solve_slot():
         kwargs = _browser_kwargs(proxy)
 
         browser = await cloakbrowser.launch_async(**kwargs)

@@ -1,0 +1,25 @@
+[Unit]
+Description=Persistent Xvfb display for the captcha-solver (DISPLAY=:99)
+Before=captcha-solver.service
+
+[Service]
+Type=simple
+# Example unit — adjust User= and the /opt/captcha-solver paths to your install.
+User=captcha
+Group=captcha
+# Stable Xauthority path — see start-xvfb.sh for why xvfb-run's random
+# /tmp/xvfb-run.XXXXXX/Xauthority breaks headed launches down the subprocess
+# chain (server -> browser driver -> chrome).
+Environment=DISPLAY_NUM=:99
+Environment=XAUTH_DIR=/opt/captcha-solver/.cache
+ExecStartPre=/usr/bin/install -d -m 700 /opt/captcha-solver/.cache
+ExecStartPre=/usr/bin/touch /opt/captcha-solver/.cache/Xauthority
+ExecStartPre=/usr/bin/chmod 600 /opt/captcha-solver/.cache/Xauthority
+# Seed a cookie for :99 if absent (idempotent per display entry).
+ExecStartPre=/bin/bash -c 'xauth -f /opt/captcha-solver/.cache/Xauthority list :99 >/dev/null 2>&1 || xauth -f /opt/captcha-solver/.cache/Xauthority add :99 . "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d " \n")"'
+ExecStart=/usr/bin/Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp -auth /opt/captcha-solver/.cache/Xauthority
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

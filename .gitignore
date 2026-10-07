@@ -22,5 +22,9 @@ tests/
 AGENTS.md
 CLAUDE.md
 .kiro/
+# Xvfb auth cookie written by start-xvfb.sh / the xvfb unit
+.cache/
+# Local binary pin sidecar (machine-specific; not published)
+.cloakbrowser-pin
 # ONNX models (downloaded from HuggingFace, ~1.4GB)
 arkose/models/

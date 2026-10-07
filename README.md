@@ -92,24 +92,67 @@ sudo journalctl -u captcha-solver.service -f       # live logs
 
 The unit (`/etc/systemd/system/captcha-solver.service`) runs the server headful
 under a virtual display so the interactive Turnstile/reCAPTCHA paths work on a
-headless box:
+headless box.
+
+> **Do NOT use `xvfb-run -a` for the service.** It creates a random
+> `/tmp/xvfb-run.XXXXXX/Xauthority` per invocation and the auth-file path is not
+> reliably inherited down the subprocess chain (server → cloakbrowser →
+> Playwright driver → chrome). The symptom is a headed launch failing with
+> *"Looks like you launched a headed browser without having a XServer running"*
+> even though `DISPLAY` is set. Start a **persistent Xvfb with a stable
+> Xauthority path** instead — `./start-xvfb.sh` does this and prints the two
+> env vars to use:
+
+```bash
+./start-xvfb.sh
+# DISPLAY=:99
+# XAUTHORITY=$HOME/.cache/captcha-solver-x/Xauthority
+```
 
 ```ini
-ExecStart=/usr/bin/xvfb-run -a --server-args="-screen 0 1920x1080x24" \
-    /opt/captcha-solver/venv/bin/python3 server.py
+ExecStart=/opt/captcha-solver/venv/bin/python3 server.py
 Environment=PORT=8877
 Environment=BROWSER_HEADLESS=0
+Environment=DISPLAY=:99
+Environment=XAUTHORITY=/opt/captcha-solver/.cache/Xauthority
 Restart=always
 ```
 
 For ad-hoc/dev runs without systemd there is also `run.sh` (sources the venv,
-execs `server.py` on `:8877`); wrap it in `xvfb-run` if you need a headful
-browser.
+execs `server.py` on `:8877`); export the same `DISPLAY`/`XAUTHORITY` pair from
+`start-xvfb.sh` before running it.
+
+### Concurrency
+
+Every solve launches its own CloakBrowser instance (~1 GB RSS measured), so
+concurrency is bounded by a process-wide semaphore in `common/concurrency.py`:
+
+    limit = min(cpu_count, ram_budget, 16)      # ram_budget = (min(MemAvailable,
+                                                #   cgroup_limit) - 10%) / 1200 MB
+
+The limit is computed from **live system resources**, not hardcoded — and it
+honours the **cgroup memory limit** when one applies (systemd `MemoryMax`,
+Docker `--memory`, a background-worker cgroup, a k8s pod limit). That
+matters: `/proc/meminfo` reports the whole host even inside a 4 GB cgroup, so a
+MemAvailable-only budget overshoots and the kernel OOM-kills browsers mid-solve
+— which looks like flaky captchas, not a resource problem.
+
+Override with `SOLVER_MAX_CONCURRENT` (`2` on a small box; `0` = uncapped,
+explicit opt-in only — an unbounded burst can OOM the host).
+
+```bash
+# see the computed limit in the log after the first solve
+grep "concurrency limit" /var/log/captcha-solver.log
+```
+
+> Earlier versions serialized every solve behind a per-solver `asyncio.Lock`.
+> It was replaced by the dynamic semaphore above (16 concurrent Turnstile
+> solves measured at 6.5 s wall vs ~82 s serialized).
 
 ### Browser display modes
 
-- Under the service, the whole process runs inside `xvfb-run`, so every solver
-  has a virtual display available.
+- Under the service, the whole process runs against the persistent Xvfb
+  display, so every solver has a virtual display available.
 - **All browser solvers** share one global `BROWSER_HEADLESS` flag
   (`0` = headed, anything else = headless). Service sets `BROWSER_HEADLESS=0`.
 - Code defaults when the env is unset: Turnstile family headless, interactive
@@ -122,6 +165,7 @@ browser.
 | ----------------------- | ------- | ------------------------------------------- |
 | `PORT`                  | `8877`  | Listen port                                 |
 | `BROWSER_HEADLESS`      | per-solver | Global. `0` = headed for ALL browser solvers. Service sets `0`. |
+| `SOLVER_MAX_CONCURRENT` | computed | Cap on simultaneous browser solves. `0` = uncapped. |
 | `TURNSTILE_GEOIP`       | unset   | `1` = align browser timezone/locale/WebGL to the proxy exit IP (shared by Turnstile + cloudflare + awswaf) |
 | `RECAPTCHA_GEOIP`       | unset   | `1` = same geo alignment for the reCAPTCHA browser |
 | `SOLVER_ALLOW_PRIVATE`  | unset   | `1` = allow `url`/`verify_url`/`post_fetch` targets on private/loopback/link-local hosts (SSRF guard off). Leave unset in prod. |

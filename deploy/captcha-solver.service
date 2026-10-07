@@ -1,0 +1,30 @@
+[Unit]
+Description=Captcha Solver (CloakBrowser-backed)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Example unit — adjust User= and the /opt/captcha-solver paths to your install.
+User=captcha
+Group=captcha
+WorkingDirectory=/opt/captcha-solver
+# Headful solvers need a display. Start the persistent Xvfb first (see
+# start-xvfb.sh) — NOT `xvfb-run -a`, whose random auth path is not reliably
+# inherited down the subprocess chain (server -> browser driver -> chrome).
+Environment=DISPLAY=:99
+Environment=XAUTHORITY=/opt/captcha-solver/.cache/Xauthority
+Environment=PORT=8877
+Environment=BROWSER_HEADLESS=0
+# Optional: pin the browser build so a wrapper auto-update cannot swap it
+# under a validated deployment. Set to the build you validated.
+# Environment=CLOAKBROWSER_BINARY_PATH=/opt/captcha-solver/.cloakbrowser/chromium-<version>-pro/chrome
+ExecStart=/opt/captcha-solver/.venv/bin/python3 server.py
+Restart=on-failure
+RestartSec=5
+# Solves are memory-bound (~1 GB per browser); the server bounds concurrency
+# itself via common/concurrency.py, so no MemoryMax here — let it use the box.
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
