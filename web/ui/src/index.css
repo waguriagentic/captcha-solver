@@ -1,0 +1,191 @@
+@import "tailwindcss";
+
+/* ── Design tokens ──────────────────────────────────────────────────
+   Dark-tech console. One accent (desaturated emerald), one neutral ramp,
+   no second hue anywhere: status colors are the only exception and they are
+   desaturated to sit in the same family as the accent.
+
+   Shape lock: cards 10px, controls 8px, status chips pill. Documented here
+   once and applied everywhere — no other radii in the app.
+   ------------------------------------------------------------------ */
+@theme {
+  --color-base: #08090b;
+  --color-panel: #0e1013;
+  --color-raised: #14171b;
+  --color-line: #1e2228;
+  --color-line-strong: #2b3138;
+
+  --color-fg: #e8eaed;
+  --color-muted: #99a2ad;
+  --color-faint: #6a737f;
+
+  --color-accent: #2fbf85;
+  --color-accent-soft: #1c3b30;
+  --color-warn: #d9a441;
+  --color-danger: #e0575b;
+
+  --radius-card: 10px;
+  --radius-control: 8px;
+
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, "SFMono-Regular", monospace;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-base);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* One focus treatment for the whole app, always visible for keyboard users. */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--color-accent) 35%, transparent);
+    color: var(--color-fg);
+  }
+
+  input,
+  textarea,
+  select,
+  button {
+    font: inherit;
+    color: inherit;
+  }
+
+  /* Autofill must not repaint the field white. */
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus {
+    -webkit-text-fill-color: var(--color-fg);
+    -webkit-box-shadow: 0 0 0 1000px var(--color-raised) inset;
+    caret-color: var(--color-fg);
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-line-strong);
+    border-radius: 999px;
+    border: 2px solid var(--color-base);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-faint);
+  }
+}
+
+@layer utilities {
+  /* Hairline grid backdrop for the hero. Static, no animation. */
+  .bg-grid {
+    background-image:
+      linear-gradient(to right, var(--color-line) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--color-line) 1px, transparent 1px);
+    background-size: 64px 64px;
+  }
+
+  .fade-edges {
+    mask-image: radial-gradient(ellipse 70% 60% at 50% 0%, #000 40%, transparent 100%);
+  }
+
+  .num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+  }
+}
+
+/* ── Marquee ────────────────────────────────────────────────────────
+   The track holds the content twice and travels exactly -50%, so the loop
+   is seamless. Paused on hover and on focus so a reader can actually read a
+   panel. Under prefers-reduced-motion the component renders a static grid
+   instead of this track at all.
+   ------------------------------------------------------------------ */
+@keyframes marquee-x {
+  from { transform: translate3d(0, 0, 0); }
+  to   { transform: translate3d(-50%, 0, 0); }
+}
+
+.marquee-viewport {
+  mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent);
+}
+
+.marquee-track {
+  animation: marquee-x 46s linear infinite;
+  will-change: transform;
+}
+
+.marquee-viewport:hover .marquee-track,
+.marquee-viewport:focus-within .marquee-track {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .marquee-track { animation: none; }
+}
+
+/* ── Motion ─────────────────────────────────────────────────────────
+   Everything below is decoration on top of a page that already reads
+   correctly without it. Reduced-motion turns it all off.
+   ------------------------------------------------------------------ */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 0.7; transform: scale(1); }
+  50% { opacity: 0.15; transform: scale(1.9); }
+}
+
+.live-dot {
+  animation: pulse-dot 2.4s ease-in-out infinite;
+}
+
+.live-dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: inherit;
+  animation: pulse-dot 2.4s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--color-raised) 0%,
+    var(--color-line) 50%,
+    var(--color-raised) 100%
+  );
+  background-size: 800px 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

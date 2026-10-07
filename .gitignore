@@ -14,8 +14,18 @@ build/
 # Credentials
 .env
 .solver-token.env
+.solver-admin.json
+.solver-sessions.json
+# Scratch variants used by tools/smoke_dashboard.py and manual verification.
+.tmp-*admin*.json
+.tmp-*sessions*.json
+.tmp-*.py
 apikey.txt
 **/apikey.txt
+
+# Frontend
+node_modules/
+web/ui/dist/
 
 # Local-only
 tests/

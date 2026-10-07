@@ -49,35 +49,65 @@ drives/harvests the challenge, and returns a replayable token. Every solver is
 
 | Method | Path       | Auth        | Description                                  |
 | ------ | ---------- | ----------- | -------------------------------------------- |
-| GET    | `/health`  | public      | Liveness + supported types (11)              |
+| POST   | `/solve`   | token       | Solve a captcha (dispatch by `type`)         |
+| GET    | `/health`  | token       | Liveness + supported types (11)              |
 | GET    | `/status`  | token       | Service status + list of currently running tasks |
 | GET    | `/logs`    | token       | Last N solve events (buffer holds up to 100; `lines` caps at 200 but returns only what's buffered; `total` is the full buffer size) |
-| POST   | `/solve`   | token       | Solve a captcha (dispatch by `type`)         |
-| GET    | `/docs`    | public      | **Swagger UI** — interactive API docs        |
+| GET    | `/docs`    | public      | **API reference** — the dashboard's own page |
+| GET    | `/swagger` | public      | **Swagger UI** — interactive API docs        |
 | GET    | `/redoc`   | public      | **ReDoc** — reference API docs               |
 | GET    | `/openapi.json` | public | Raw OpenAPI 3 schema                          |
+| GET    | `/`        | public      | Landing page (React SPA)                     |
+| GET    | `/api/v1/meta` | public  | Service metadata for the landing page        |
+| GET    | `/api/v1/reference` | public | Endpoints, types and request-field metadata (the `/docs` page payload) |
+| POST   | `/api/v1/auth/login` | public | Start an admin session (throttled per IP) |
+| GET    | `/api/v1/auth/session` | public | Current session probe (`authenticated: false` when anonymous) |
+| POST   | `/api/v1/auth/logout` | session | End the admin session                |
+| GET    | `/api/v1/overview` | session | Console snapshot: KPIs, recent activity, latency series, system |
+| GET    | `/api/v1/stream` | session   | **Server-sent events** — pushes a snapshot whenever a solve lands |
+| GET    | `/api/v1/solves` | session   | Solve history (filter by `type`, `failed`)   |
+| GET    | `/api/v1/types` | session    | Supported types + required fields            |
+| GET    | `/api/v1/system` | session   | Runtime, browser and auth state              |
+| POST   | `/api/v1/solve` | session + CSRF | Run a solve from the console           |
 
-`/health` and the docs paths (`/docs`, `/redoc`, `/openapi.json`) are public.
-Everything else — including `/solve`, `/status`, `/logs` — requires a Bearer
-token **when accessed through the public domain** (Caddy allow-lists the docs
-paths, see "Remote access" below). On localhost the service itself enforces no auth.
+**Nothing about the solver is public.** `/health` is token-gated like every
+other solver endpoint: a public liveness probe confirms to an anonymous scanner
+that the service exists and is worth attacking. Only the human-readable
+surfaces (the landing page, the reference page, the OpenAPI schema) are
+reachable without a credential, and none of them expose solve history, host
+configuration or counts.
+
+The `/api/v1/*` endpoints are the **dashboard** surface: session cookie plus a
+CSRF header on writes, never the Bearer token. See "Admin dashboard" below for
+why the two credential types live on separate hostnames.
+
+> **`/docs` is the dashboard's own reference page, not Swagger.** Swagger UI
+> moved to `/swagger` so `/docs` could be a page that matches the product. Both
+> are on the API host; the dashboard origin also serves `/docs` (its nav links
+> to it) but not `/swagger`.
 
 ### Interactive docs (Swagger)
 
 FastAPI auto-generates OpenAPI docs from the typed models — no separate spec to
 maintain. Open in a browser (no token needed):
 
-- **Swagger UI** — <https://solver.example.com/docs> (or `http://127.0.0.1:8877/docs` on-box).
-  Every field is described; the `POST /solve` body has a **dropdown of ready-to-run
-  examples** (Turnstile, reCAPTCHA v2/v3, hCaptcha, real-page) for "Try it out"; and
-  `400/408/500` responses are documented. Examples use placeholder sitekeys only.
-  A **servers dropdown** switches the base URL between Public (`https://solver.example.com`)
-  and Local (`http://127.0.0.1:8877`), and an **Authorize** button accepts the Bearer token
-  and forwards it on "Try it out" (real enforcement still lives at the Caddy layer).
-- **ReDoc** — <https://solver.example.com/redoc> — a clean reference layout.
+- **API reference** — <https://api.example.com/docs> (or `http://127.0.0.1:8877/docs`
+  on-box). The hand-built page: endpoint table with auth levels, every captcha type
+  with its required and returned fields, and the full request-field table derived
+  from the Pydantic models so it cannot drift.
+- **Swagger UI** — <https://api.example.com/swagger>. Every field is described; the
+  `POST /solve` body has a **dropdown of ready-to-run examples** (Turnstile,
+  reCAPTCHA v2/v3, hCaptcha, real-page) for "Try it out"; and `400/408/500`
+  responses are documented. Examples use placeholder sitekeys only.
+  A **servers dropdown** switches the base URL between Public and Local
+  (`http://127.0.0.1:8877`), and an **Authorize** button accepts the Bearer token
+  and forwards it on "Try it out".
+- **ReDoc** — <https://api.example.com/redoc> — a clean reference layout.
 
-> Note the path is `/redoc` (no trailing "s"). The docs are exposed publicly by an
-> allow-list in the Caddy vhost; `/solve` and the monitoring endpoints stay token-gated.
+> Note the path is `/redoc` (no trailing "s"). These three paths are the only
+> solver-side surfaces that answer without a token, and they describe the
+> interface only. `/solve`, `/health` and the monitoring endpoints stay
+> token-gated even on the API host.
 
 ## Running
 
@@ -276,11 +306,12 @@ Never both.**
 
 ## Examples
 
-Local (no token needed):
+Local — set `SOLVER_ALLOW_UNAUTHENTICATED=1` for a token-free dev box, or send
+the token. Everything below assumes the token is configured:
 
 ```bash
-# Health
-curl http://127.0.0.1:8877/health
+# Health (token required, like every solver endpoint)
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8877/health
 
 # Turnstile
 curl -X POST http://127.0.0.1:8877/solve \
@@ -305,28 +336,197 @@ curl -X POST http://127.0.0.1:8877/solve \
 
 ## Remote access (public domain)
 
-Exposed at **`https://solver.example.com`** via Cloudflare Tunnel
+Exposed at **`https://api.example.com`** via Cloudflare Tunnel
 (`<tunnel-id>`) → Caddy vhost `:<caddy-port>` → this service on `:8877`.
 
-Because the solver has **no built-in auth** and a public solve would burn
-CloakBrowser resources for anyone, the Caddy vhost enforces a **static Bearer
-token** on every path except `/health`:
+A public solve would burn CloakBrowser resources for anyone, so the service
+enforces a **static Bearer token** itself (`SOLVER_API_TOKEN_SHA256`) and the
+Caddy vhost enforces it again at the edge. `/health` is included: a public
+liveness probe advertises the service to anonymous scanners.
 
 ```bash
 # token lives in ~/scripts/captcha-solver/.solver-token.env  (chmod 600)
 TOKEN=$(cut -d= -f2 ~/scripts/captcha-solver/.solver-token.env)
 
-# health — public, no token
-curl https://solver.example.com/health
+# health — token required
+curl -H "Authorization: Bearer $TOKEN" https://api.example.com/health
 
 # solve — token required
-curl -X POST https://solver.example.com/solve \
+curl -X POST https://api.example.com/solve \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"type":"turnstile","sitekey":"0x4AAA...","url":"https://target.com"}'
 ```
 
 Requests to protected paths without a valid token get `403 Forbidden`.
+
+## Admin dashboard (optional, two subdomains)
+
+The repo ships a React console (`web/ui`) served by the same process. It is
+**off unless configured** — with no admin credential every dashboard route
+returns 404 and the solver behaves exactly as before.
+
+The recommended deployment splits the surfaces across two hostnames. This is a
+security boundary, not a routing preference: each origin then holds exactly one
+credential type, so neither can be leveraged into the other. A flaw on the
+dashboard origin cannot reach `/solve` (that path does not exist there), and a
+leaked API token cannot mint a session (the auth endpoints do not exist there).
+Cookies are host-scoped by the browser, so the API origin never receives the
+session cookie at all.
+
+| Host | Serves | Authenticates with |
+|---|---|---|
+| `dash.example.com` | SPA shell, `/api/v1/*`, plus `/docs` and `/openapi.json` (its own nav links to them) | `cs_session` cookie (HttpOnly, SameSite=Strict) + `X-CSRF-Token` on writes |
+| `api.example.com` | `/solve`, `/health`, `/status`, `/logs`, `/docs`, `/swagger`, `/openapi.json` | static Bearer token |
+
+### 1. Create the admin credential
+
+```bash
+# Print a strong password, then hash it. The plaintext never enters the env.
+python -m web.auth generate
+python -m web.auth hash
+
+# Or let the service hash ADMIN_PASSWORD once at first boot; it persists the
+# digest to .solver-admin.json (chmod 600) and then the plaintext can go away.
+```
+
+### 2. Set the service environment
+
+Every variable the service reads is documented in **`.env.example`** — copy it
+and fill in the three values an operator must supply:
+
+```bash
+cp .env.example .env
+python -m web.auth generate          # a strong admin password
+python -m web.auth hash              # its digest -> ADMIN_PASSWORD_HASH
+openssl rand -hex 32                 # -> SOLVER_CSRF_SECRET
+printf %s "$YOUR_TOKEN" | sha256sum  # -> SOLVER_API_TOKEN_SHA256
+```
+
+The service does **not** read `.env` itself (there is no dotenv loader, on
+purpose: an env file silently overriding the unit environment is a debugging
+trap). Point systemd at it, or source it for a local run:
+
+```ini
+# in the [Service] section
+EnvironmentFile=/opt/captcha-solver/.env
+```
+
+```bash
+set -a; . ./.env; set +a; ./run.sh     # local run
+```
+
+`tools/check_env_example.py` asserts the example still parses, covers every
+variable the code reads, and boots a working configuration:
+
+```bash
+python tools/check_env_example.py
+```
+
+The equivalent as raw unit environment, if you prefer not to use a file:
+
+```ini
+# /etc/systemd/system/captcha-solver.service.d/dashboard.conf
+[Service]
+Environment=SOLVER_ADMIN_USER=admin
+Environment=ADMIN_PASSWORD_HASH=scrypt$32768$8$1$<salt>$<hash>
+# Stable secret so sessions survive a restart. Rotating it invalidates all of
+# them. Leave unset and a random one is generated per process (dev only).
+Environment=SOLVER_CSRF_SECRET=<openssl rand -hex 32>
+# Turn on host isolation. Omit both to disable the split (single-host installs).
+Environment=SOLVER_DASHBOARD_HOST=dash.example.com
+Environment=SOLVER_API_HOST=api.example.com
+# Service-side Bearer enforcement. REQUIRED unless you set
+# SOLVER_ALLOW_UNAUTHENTICATED=1: without a token the solver endpoints refuse
+# every caller rather than coming up open. Prefer the sha256 form so the token
+# itself is not in the unit environment.
+Environment=SOLVER_API_TOKEN_SHA256=<sha256 of the token>
+# Bind loopback and let the proxy be the only way in (default 127.0.0.1).
+# Set SOLVER_BIND_HOST=0.0.0.0 only if you really need direct access.
+Environment=SOLVER_BIND_HOST=127.0.0.1
+# Only when a proxy you control always sets X-Forwarded-For / CF-Connecting-IP,
+# otherwise the login throttle keys on the proxy address.
+Environment=SOLVER_TRUST_PROXY=1
+```
+
+Optional: `SOLVER_SESSION_TTL` (default 12h), `SOLVER_LOGIN_MAX_FAILURES`
+(default 5), `SOLVER_LOGIN_LOCKOUT_S` (default 300), `SOLVER_COOKIE_SECURE`
+(forced on when the request arrives over https; set to `1` to pin it),
+`SOLVER_SESSION_FILE`, `SOLVER_ADMIN_HASH_FILE`, `SOLVER_API_PUBLIC_URL`
+(shown on the landing page), `SOLVER_ALLOWED_HOSTS` (extra names allowed to
+reach everything), `SOLVER_ALLOW_UNAUTHENTICATED=1` (single-host dev only).
+
+> **`SOLVER_TRUST_PROXY` and the login throttle.** When set, the throttle keys
+> on `CF-Connecting-IP` when present, else the LAST `X-Forwarded-For` entry —
+> the hop the proxy itself appended. The first entry is attacker-controlled
+> (Caddy preserves a client-supplied prefix), so trusting it would let anyone
+> rotate the lockout key at will.
+
+### 3. Build the console
+
+```bash
+npm --prefix web/ui install
+npm --prefix web/ui run build     # emits web/ui/dist, served on next restart
+```
+
+### 4. Caddy
+
+Both vhosts point at the same upstream; the app decides by `Host` header.
+
+```caddyfile
+# ── Dashboard: cookie-authenticated. No Bearer token here. ──
+dash.example.com {
+    reverse_proxy 127.0.0.1:8877
+    # The app sets CSP, HSTS, X-Frame-Options and friends itself; do not
+    # duplicate them here or the two policies will drift.
+}
+
+# ── API: token-authenticated. No cookies, no SPA. ──
+api.example.com {
+    # Docs stay public so the reference is reachable without a secret.
+    @docs path /docs* /redoc* /openapi.json
+    handle @docs {
+        reverse_proxy 127.0.0.1:8877
+    }
+
+    # Everything else needs the static token, /health included. {$SOLVER_TOKEN}
+    # is imported from the environment; see `caddy run --envfile`.
+    @token header Authorization "Bearer {$SOLVER_TOKEN}"
+    handle @token {
+        reverse_proxy 127.0.0.1:8877
+    }
+
+    handle {
+        respond "Forbidden" 403
+    }
+}
+```
+
+Cloudflare Tunnel routes both hostnames to the same local port:
+
+```yaml
+# ~/.cloudflared/config.yml
+ingress:
+  - hostname: dash.example.com
+    service: http://127.0.0.1:8877
+  - hostname: api.example.com
+    service: http://127.0.0.1:8877
+  - service: http_status:404
+```
+
+> **Order matters in the split.** Put `dash.example.com` first: if the API
+> host were listed first with a catch-all, the dashboard would be unreachable.
+> The app enforces the same rule from the other side — `/solve` on the
+> dashboard host returns 404 even if the proxy would have allowed it.
+
+### Operating it
+
+```bash
+python -m web.auth revoke     # invalidate every live session immediately
+```
+
+Sessions live in `.solver-sessions.json` (0600, gitignored) so a restart does
+not log you out. `POST /api/v1/auth/logout` destroys one; `revoke` destroys all.
 
 ## Cloudflare clearance (`cf_clearance`)
 
@@ -521,6 +721,19 @@ captcha-solver/
 ├── run.sh                 # venv launcher
 ├── requirements.txt       # declarative dep manifest (already in the project venv)
 ├── .solver-token.env      # Bearer token for remote access (chmod 600, gitignored)
+├── .env.example           # every env var the service reads, with defaults
+├── web/                   # admin dashboard (optional; 404s without a credential)
+│   ├── auth.py            #   scrypt credential, sessions, CSRF, lockout, CLI
+│   ├── routes.py          #   /api/v1 JSON API + SPA shell + security headers
+│   ├── hosts.py           #   dashboard/API host isolation policy
+│   └── ui/                #   React 19 + Vite + Tailwind v4 console
+│       ├── src/pages/     #     Landing.tsx · Login.tsx · Dashboard.tsx
+│       └── dist/          #     build output served by server.py (gitignored)
+├── tools/
+│   ├── smoke_dashboard.py #   end-to-end auth/CSRF/isolation test (no browser)
+│   ├── check_env_example.py #  validates .env.example against the code
+│   ├── smoke_all_types.py #   live solver smoke across every type
+│   └── bench_parallel.py  #   concurrency benchmark
 ├── common/
 │   ├── mistral.py         # shared Mistral vision KeyPool (round-robin + failover)
 │   ├── browser.py         # shared helpers: selector/pre_actions/browser_kwargs/post_fetch

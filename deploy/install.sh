@@ -69,14 +69,42 @@ $SUDO systemctl restart "$UNIT"
 
 echo
 echo "== 3. wait for health =="
+# /health is token-gated like every other solver endpoint, and under host
+# isolation a bare 127.0.0.1 request is refused as misdirected. So the probe
+# needs both a Host the policy accepts and the Bearer token. Read them from the
+# environment file when it exists, else from the caller's environment.
+ENV_FILE="${SOLVER_ENV_FILE:-$REPO/.env}"
+if [ -f "$ENV_FILE" ]; then
+    PROBE_HOST="${SOLVER_PROBE_HOST:-$(sed -n 's/^SOLVER_API_HOST=//p' "$ENV_FILE" | head -1)}"
+    PROBE_TOKEN="${SOLVER_PROBE_TOKEN:-$(sed -n 's/^SOLVER_API_TOKEN=//p' "$ENV_FILE" | head -1)}"
+fi
+PROBE_HOST="${PROBE_HOST:-${SOLVER_PROBE_HOST:-}}"
+PROBE_TOKEN="${PROBE_TOKEN:-${SOLVER_PROBE_TOKEN:-}}"
+
+if [ -n "$PROBE_HOST" ] && [ -n "$PROBE_TOKEN" ]; then
+    echo "  probing http://127.0.0.1:8877/health as Host: $PROBE_HOST (with token)"
+    probe() {
+        curl -sf -m 3 -H "Host: $PROBE_HOST" \
+             -H "Authorization: Bearer $PROBE_TOKEN" \
+             "http://127.0.0.1:8877/health"
+    }
+else
+    # No isolation and no token configured: the service answers directly.
+    probe() { curl -sf -m 3 "http://127.0.0.1:8877/health"; }
+fi
+
 for i in $(seq 1 25); do
-    if curl -sf -m 3 http://127.0.0.1:8877/health >/dev/null 2>&1; then
+    if probe >/dev/null 2>&1; then
         echo "healthy after ${i}s"
         break
     fi
     sleep 1
 done
-curl -s -m 5 http://127.0.0.1:8877/health && echo
+if ! probe; then
+    echo "  health probe failed — if isolation is on, set SOLVER_PROBE_HOST and"
+    echo "  SOLVER_PROBE_TOKEN, or point SOLVER_ENV_FILE at your env file."
+fi
+echo
 
 echo
 echo "== 4. unit states =="

@@ -46,7 +46,7 @@ _TAGS = [
 _PUBLIC_URL = os.getenv("SOLVER_PUBLIC_URL", "https://solver.example.com")
 
 app = FastAPI(
-    title="Captcha Solver",
+    title="Sonogami Solver",
     description=_DESCRIPTION,
     version="1.0.0",
     openapi_tags=_TAGS,
@@ -55,6 +55,10 @@ app = FastAPI(
         {"url": _PUBLIC_URL, "description": "Public (Bearer token required)"},
         {"url": "http://127.0.0.1:8877", "description": "Local (no auth)"},
     ],
+    # Interactive Swagger UI lives at /swagger: /docs is the human-written
+    # reference page served by the dashboard SPA on the same origin.
+    docs_url="/swagger",
+    redoc_url="/redoc",
     swagger_ui_parameters={
         "docExpansion": "list",
         "persistAuthorization": True,     # keep the Bearer token across reloads
@@ -84,6 +88,9 @@ _solve_log = deque(maxlen=100)
 # current tasks by id rather than a single global that they'd clobber.
 _solve_current: dict = {}
 _task_ids = itertools.count(1)
+# Lifetime solve count — unlike _solve_log it is never trimmed, so the console
+# can show total work done since boot next to the ring-buffer window.
+_solve_total = 0
 
 
 def _is_solved(result: dict) -> bool:
@@ -112,6 +119,8 @@ def _log_solve(type_: str, sitekey: Optional[str], url: str, result: dict):
         "timestamp": time.time(),
         "success": solved and not result.get("error"),
     })
+    global _solve_total
+    _solve_total += 1
 
 
 def _assert_public_url(raw: str, field: str):
@@ -373,6 +382,69 @@ def _extract(req: SolveRequest):
     return actions, fetches
 
 
+async def run_solve(req: SolveRequest) -> dict:
+    """Validate, execute and log one solve; return the result with `solved` set.
+
+    Shared by POST /solve (HTTP callers) and the admin dashboard API, so both
+    paths get identical validation, SSRF guards, deadline handling and logging.
+    Raises HTTPException on bad input / timeout — callers translate or forward.
+    """
+    if req.type not in SUPPORTED:
+        raise HTTPException(400, f"Unsupported type: {req.type}. Supported: {SUPPORTED}")
+    # Self-URL solvers default their own canonical URL so downstream logging has a str.
+    if req.type == "botguard" and not req.url:
+        req.url = "https://accounts.google.com/signin/v2/identifier?flowName=GlifWebSignIn"
+    if req.type == "perimeterx" and not req.url:
+        # PerimeterX press-hold gate is reached via the new-@outlook.com-mailbox flow.
+        req.url = ("https://go.microsoft.com/fwlink/p/?linkid=2125440"
+                   "&clcid=0x409&culture=en-us&country=us")
+    if not req.url and req.type not in _SELF_URL:  # goto("") is meaningless
+        raise HTTPException(400, "url is required")
+    if req.type == "aliyun" and (not req.scene_id or not req.prefix):
+        raise HTTPException(400, "scene_id and prefix are required for type=aliyun")
+    if req.type == "arkose" and not req.public_key:
+        raise HTTPException(400, "public_key is required for type=arkose")
+    if req.type not in _PAGE_LEVEL and req.type not in ("aliyun", "arkose") and not req.sitekey:
+        raise HTTPException(400, f"sitekey is required for type={req.type}")
+    _validate_urls(req)
+
+    sk = req.sitekey or ""  # cloudflare has no sitekey
+    log.info("Solve: type=%s sitekey=%s url=%s", req.type, sk[:12], req.url)
+
+    task_id = next(_task_ids)
+    _url = req.url or ""   # self-hosted solvers (aliyun, botguard, ...) carry no url
+    _solve_current[task_id] = {
+        "type": req.type,
+        "sitekey": sk[:12] + ("..." if len(sk) > 12 else ""),
+        "url": _url[:60] + ("..." if len(_url) > 60 else ""),
+        "version": req.version or None,
+        "started_at": time.time(),
+    }
+    try:
+        # Global deadline: a hung browser can't wedge the per-type lock forever — the
+        # timeout cancels the coroutine, releasing the lock (caller sees 408). A solver's
+        # own no-token TimeoutError is caught INSIDE _dispatch, so a bare TimeoutError
+        # here is only ever the real deadline.
+        async with asyncio.timeout(req.timeout_s or 60):
+            result = await _dispatch(req)
+        # ONE success signal for every type — callers read result["solved"], never branch.
+        result["solved"] = _is_solved(result)
+        _log_solve(req.type, req.sitekey, req.url, result)
+        return result
+    except (TimeoutError, asyncio.TimeoutError):
+        raise HTTPException(408, f"solve timed out after {req.timeout_s or 60}s")
+    except HTTPException:
+        raise
+    except ValueError as e:
+        # Bad optional params (e.g. classifier not in yolo|mistral|hybrid|auto)
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        log.error("Solve failed: %s", e, exc_info=True)
+        raise HTTPException(500, str(e))
+    finally:
+        _solve_current.pop(task_id, None)
+
+
 async def _dispatch(req: SolveRequest) -> dict:
     """Run the actual solver for req.type/version and return its result dict.
 
@@ -571,60 +643,7 @@ async def solve(req: SolveRequest = Body(..., openapi_examples=_SOLVE_EXAMPLES))
     FastAPI's `{detail}` envelope (400 bad input, 408 timeout, 422 schema, 500 crash).
     So: 2xx → read `solved`; non-2xx → read `detail`. Never both.
     """
-    if req.type not in SUPPORTED:
-        raise HTTPException(400, f"Unsupported type: {req.type}. Supported: {SUPPORTED}")
-    # Self-URL solvers default their own canonical URL so downstream logging has a str.
-    if req.type == "botguard" and not req.url:
-        req.url = "https://accounts.google.com/signin/v2/identifier?flowName=GlifWebSignIn"
-    if req.type == "perimeterx" and not req.url:
-        # PerimeterX press-hold gate is reached via the new-@outlook.com-mailbox flow.
-        req.url = ("https://go.microsoft.com/fwlink/p/?linkid=2125440"
-                   "&clcid=0x409&culture=en-us&country=us")
-    if not req.url and req.type not in _SELF_URL:  # goto("") is meaningless
-        raise HTTPException(400, "url is required")
-    if req.type == "aliyun" and (not req.scene_id or not req.prefix):
-        raise HTTPException(400, "scene_id and prefix are required for type=aliyun")
-    if req.type == "arkose" and not req.public_key:
-        raise HTTPException(400, "public_key is required for type=arkose")
-    if req.type not in _PAGE_LEVEL and req.type not in ("aliyun", "arkose") and not req.sitekey:
-        raise HTTPException(400, f"sitekey is required for type={req.type}")
-    _validate_urls(req)
-
-    sk = req.sitekey or ""  # cloudflare has no sitekey
-    log.info("Solve: type=%s sitekey=%s url=%s", req.type, sk[:12], req.url)
-
-    task_id = next(_task_ids)
-    _url = req.url or ""   # self-hosted solvers (aliyun, botguard, ...) carry no url
-    _solve_current[task_id] = {
-        "type": req.type,
-        "sitekey": sk[:12] + ("..." if len(sk) > 12 else ""),
-        "url": _url[:60] + ("..." if len(_url) > 60 else ""),
-        "version": req.version or None,
-        "started_at": time.time(),
-    }
-    try:
-        # Global deadline: a hung browser can't wedge the per-type lock forever — the
-        # timeout cancels the coroutine, releasing the lock (caller sees 408). A solver's
-        # own no-token TimeoutError is caught INSIDE _dispatch, so a bare TimeoutError
-        # here is only ever the real deadline.
-        async with asyncio.timeout(req.timeout_s or 60):
-            result = await _dispatch(req)
-        # ONE success signal for every type — callers read result["solved"], never branch.
-        result["solved"] = _is_solved(result)
-        _log_solve(req.type, req.sitekey, req.url, result)
-        return result
-    except (TimeoutError, asyncio.TimeoutError):
-        raise HTTPException(408, f"solve timed out after {req.timeout_s or 60}s")
-    except HTTPException:
-        raise
-    except ValueError as e:
-        # Bad optional params (e.g. classifier not in yolo|mistral|hybrid|auto)
-        raise HTTPException(400, str(e))
-    except Exception as e:
-        log.error("Solve failed: %s", e, exc_info=True)
-        raise HTTPException(500, str(e))
-    finally:
-        _solve_current.pop(task_id, None)
+    return await run_solve(req)
 
 
 @app.get("/logs", response_model=LogsResponse, tags=["monitoring"],
@@ -650,7 +669,63 @@ async def solver_status():
     }
 
 
+@app.middleware("http")
+async def _gate(request, call_next):
+    """Two request gates, in order: host isolation, then API token.
+
+    Host isolation (see web/hosts.py) keeps the cookie surface and the token
+    surface on separate origins when SOLVER_DASHBOARD_HOST / SOLVER_API_HOST
+    are set. The token check is the optional service-side enforcement of the
+    Bearer token that the reverse proxy otherwise owns.
+
+    SECURITY: authorise on ``scope["path"]``, never on ``request.url.path``.
+    Starlette builds ``URL.path`` by string-concatenating the client-supplied
+    Host header with the scope path and re-parsing the result, so
+    ``Host: api.example.com:443/docs`` makes ``request.url.path`` read
+    "/docs/solve" — permitted, and absent from API_TOKEN_PATHS — while the
+    router still dispatches "/solve". Both controls below would be defeated by
+    that single header. The scope path is what the router actually matches.
+    """
+    from fastapi.responses import PlainTextResponse
+    from web import auth, hosts
+
+    path = request.scope["path"]
+
+    verdict = hosts.POLICY.evaluate(request.headers.get("host", ""), path)
+    if verdict == hosts.WRONG_HOST:
+        # 421: the request reached a listener that does not serve this name.
+        return PlainTextResponse("Misdirected Request", status_code=421)
+    if verdict == hosts.BLOCKED_PATH:
+        return PlainTextResponse("Not found", status_code=404)
+
+    if path in auth.API_TOKEN_PATHS:
+        if not auth.api_token_valid(request.headers.get("authorization")):
+            return PlainTextResponse("Unauthorized", status_code=401,
+                                     headers={"WWW-Authenticate": "Bearer"})
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def _security_headers(request, call_next):
+    response = await call_next(request)
+    from web import routes
+    routes.security_headers(request, response)
+    return response
+
+
+# Admin dashboard (SPA + /api/v1). Mounted last so its catch-all SPA route
+# cannot shadow the API endpoints above. The dashboard 404s entirely unless an
+# admin credential is configured — see web/auth.py.
+from web.routes import router as _web_router  # noqa: E402
+app.include_router(_web_router)
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", "8877"))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    # Loopback by default: the documented topology terminates TLS at a local
+    # proxy (Cloudflare tunnel -> Caddy -> this process). Set SOLVER_BIND_HOST
+    # to 0.0.0.0 only when you really do want the solver reachable directly,
+    # and then keep the Bearer token configured.
+    host = os.getenv("SOLVER_BIND_HOST", "127.0.0.1")
+    uvicorn.run(app, host=host, port=port)
