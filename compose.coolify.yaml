@@ -1,0 +1,140 @@
+# Captcha Solver — Coolify deployment compose.
+#
+# Why this file exists instead of using a repo-level docker-compose.yml:
+#
+#   1. Coolify runs compose with its own application directory as the project
+#      directory (/data/coolify/applications/<uuid>), so relative paths in a
+#      standalone compose file resolve away from the checkout. Every host path
+#      below therefore comes from an environment variable set on the Coolify
+#      application, with a neutral default so the file still parses.
+#
+#   2. This file is deployed VERBATIM (raw compose mode), which is what keeps
+#      the env_file below intact. Coolify's default parser rewrites each
+#      service's env_file to its own `.env` in a directory that is empty for
+#      this app — the service would boot with no configuration at all.
+#
+#   3. The service must NOT re-download its browser binary. See the volumes
+#      block for why.
+#
+# Routing: this application is published through its own Cloudflare Tunnel, not
+# through Traefik. The host has no inbound connectivity (the ISP blocks 80/443),
+# so every public hostname arrives over a tunnel. No FQDN should be attached to
+# this Coolify application.
+#
+# Two hostnames, two credential types — the app enforces the split itself
+# (web/hosts.py). Both are single-label names because a zone's edge
+# certificate covers `example.com` and `*.example.com` only:
+#
+#   solver.example.com      console — session cookie + CSRF header
+#   api-solver.example.com  API     — static Bearer token, no cookies
+#
+# Each hostname is forwarded with its OWN host header (the app answers 421 to
+# an unrecognised Host), which is why the tunnel ingress rules carry an
+# explicit originRequest.httpHostHeader.
+#
+# ── Environment variables this file reads ──────────────────────────────────
+# Set these on the Coolify application (Configuration → Environment Variables).
+# They are interpolated by `docker compose` at deploy time, so they must be
+# present for BOTH build and runtime — Coolify's default for a new variable is
+# already both.
+#
+#   CAPTCHA_ENV_FILE          absolute path to the service's env file
+#   CAPTCHA_BROWSER_DIR       directory holding the pinned `chrome` binary
+#   CAPTCHA_FONTS_DIR         directory of Windows font files
+#   CAPTCHA_GEOIP_DIR         directory holding GeoLite2-City.mmdb
+#   CAPTCHA_ARKOSE_MODELS_DIR directory of Arkose ONNX classifiers (optional)
+#   CAPTCHA_APIKEY_FILE       file of Mistral API keys, one per line (optional)
+
+services:
+  solver:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: captcha-solver:coolify
+
+    # Production configuration. Absolute, because Coolify's project directory
+    # is elsewhere; supplied as a variable so this public file carries no
+    # server-specific path. Mode 0600 on the host, owned by the operator.
+    env_file:
+      - ${CAPTCHA_ENV_FILE:-/opt/captcha-solver/.env.production}
+
+    environment:
+      # Bind the container's interface, not its loopback: a published port
+      # forwards to the container's network interface, so a process bound to
+      # 127.0.0.1 inside the container is unreachable through the mapping. The
+      # publish below stays on host loopback, which is what keeps the service
+      # private — the two decisions are independent.
+      SOLVER_BIND_HOST: 0.0.0.0
+      PORT: "8877"
+      # Headed browser under the container's own Xvfb. Several providers
+      # detect headless, and this deployment runs headed.
+      BROWSER_HEADLESS: "0"
+      DISPLAY: ":99"
+      # The mount below lands here; the wrapper reads this variable before any
+      # download logic, so the pinned build is what actually launches.
+      CLOAKBROWSER_BINARY_PATH: /opt/cloakbrowser/chrome
+
+    ports:
+      # Loopback only. The Cloudflare Tunnel dials this directly.
+      - "127.0.0.1:8877:8877"
+
+    volumes:
+      # ── The pinned, already-patched CloakBrowser build ───────────────────
+      # Read-only. Mounted rather than baked in because the wrapper resolves
+      # the newest Pro build from cloakbrowser.dev, and a free-plan key cannot
+      # pin an older one (the download endpoint force-serves the latest). A
+      # build that fetched its own binary would ship whatever is current —
+      # which is not necessarily the build this deployment was validated
+      # against, and re-patching a new layout is a separate task.
+      #
+      # The directory must contain `chrome` plus its sibling resources
+      # (*.pak, locales/, icudtl.dat, the SwiftShader/EGL libraries).
+      - ${CAPTCHA_BROWSER_DIR:-/opt/captcha-solver/browser}:/opt/cloakbrowser:ro
+
+      # ── Windows font families ────────────────────────────────────────────
+      # A Chromium advertising a Windows platform while exposing only Linux
+      # font families is a detectable mismatch. The modern families (Segoe UI,
+      # Calibri, Consolas) are not redistributable, so they arrive from the
+      # host rather than being baked into the image.
+      - ${CAPTCHA_FONTS_DIR:-/opt/captcha-solver/fonts}:/usr/share/fonts/windows:ro
+
+      # ── GeoIP database ──────────────────────────────────────────────────
+      # Required by the *_GEOIP flags, which align the browser's timezone,
+      # locale and WebGL renderer to the proxy's exit IP. Without it those
+      # flags log a download failure and the alignment silently does not
+      # happen. Seeded from a host copy so the ~70MB download does not run on
+      # every container recreate.
+      - ${CAPTCHA_GEOIP_DIR:-/opt/captcha-solver/geoip}:/root/.cloakbrowser/geoip
+
+      # ── Arkose FunCaptcha models ────────────────────────────────────────
+      # 24 ONNX classifiers (~1.4GB). Optional: the arkose solver reports
+      # `solved:false` with a clear error when a model is absent rather than
+      # crashing, and the other ten types do not use them.
+      - ${CAPTCHA_ARKOSE_MODELS_DIR:-/opt/captcha-solver/arkose-models}:/app/arkose/models
+
+      # ── Vision key pool ─────────────────────────────────────────────────
+      # One Mistral API key per line, consumed round-robin with per-key
+      # failover. Used by the reCAPTCHA and hCaptcha image challenges and by
+      # the Aliyun VLM fallback — the other eight solver types need no key.
+      # Mounted rather than baked in: the repository is public and the file
+      # holds live credentials.
+      - ${CAPTCHA_APIKEY_FILE:-/opt/captcha-solver/apikey.txt}:/app/common/apikey.txt:ro
+
+    # Chrome allocates shared memory per renderer. Docker's 64MB default is
+    # small enough to crash a browser under load; the CloakBrowser Manager
+    # deployment on this host raised it for the same reason.
+    shm_size: 1gb
+
+    # tini as PID 1 — reaps browser helper processes. Without an init, chrome
+    # children accumulate as zombies under the Python parent.
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "5"

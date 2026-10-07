@@ -1,0 +1,48 @@
+# Build context exclusions.
+#
+# The runtime image only needs the solver packages, server.py and the built
+# console. Everything below is either local state, credentials, or a large
+# artifact that the compose file supplies at runtime instead of baking in.
+
+.git
+.codegraph
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+.venv-*/
+venv/
+
+# Credentials and local state — never in a build context.
+.env
+.env.*
+!.env.example
+.solver-token.env
+.solver-admin.json
+.solver-sessions.json
+.tmp-*
+apikey.txt
+**/apikey.txt
+
+# Local-only
+.cache/
+.cloakbrowser-pin
+tests/
+.hermes/
+AGENTS.md
+CLAUDE.md
+.kiro/
+
+# Frontend — rebuilt inside the image from source.
+web/ui/node_modules/
+web/ui/dist/
+
+# ONNX models (~1.4GB). Supplied by a mount when a deployment has them.
+arkose/models/
+
+# Logs and scratch
+*.log
+*.tmp

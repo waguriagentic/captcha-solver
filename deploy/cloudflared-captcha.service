@@ -1,0 +1,28 @@
+[Unit]
+Description=Cloudflare Tunnel (Captcha Solver)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+# Ingress (remote-managed, version 1):
+#   solver.example.com      -> http://127.0.0.1:8877  (console; session cookie)
+#   api-solver.example.com  -> http://127.0.0.1:8877  (API; bearer token)
+#   catch-all                -> http_status:404
+#
+# Both hostnames dial the same local port; the application decides by Host
+# header (web/hosts.py). The ingress rules carry an explicit
+# originRequest.httpHostHeader so each request arrives with the hostname the
+# policy expects — the app answers 421 to an unrecognised Host.
+#
+# The connector token lives in a file so the secret stays out of
+# `systemctl cat` output and out of the process table.
+ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel run --token-file /etc/cloudflared-captcha/token
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=1048576
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
