@@ -1,24 +1,36 @@
 {
   "version": 1,
   "recipe": {
-    "name": "Captcha Solver",
-    "kind": "python",
+    "name": "Captcha Solver (container deployment)",
+    "kind": "docker-compose",
     "bootstrap": [],
     "build": [],
     "test": [
-      "env -u PYTHONPATH -u PYTHONHOME .venv/bin/python preflight.py && env -u PYTHONPATH -u PYTHONHOME .venv/bin/python -c \"import ast,pathlib; [ast.parse(p.read_text()) for p in pathlib.Path('.').glob('*/*.py')]\" && echo SYNTAX_OK",
-      "env -u PYTHONPATH -u PYTHONHOME .venv/bin/python -c \"import sys; sys.path.insert(0,'.'); import turnstile.solve, cloudflare.solve, awswaf.solve, botguard.solve, datadome.solve, perimeterx.solve, akamai.solve, recaptcha.solve, hcaptcha.solve; print('IMPORTS_OK')\""
+      "python3 tools/check_license_patch.py",
+      "python3 tools/check_env_example.py",
+      "python3 -c \"import ast,pathlib; [ast.parse(p.read_text()) for p in pathlib.Path('.').glob('*/*.py')]; print('SYNTAX_OK')\"",
+      "bash -n entrypoint.sh && bash -n deploy/coolify-provision.sh && bash -n tools/bench_parallel_http.sh && bash -n tools/verify-edge.sh && bash -n tools/verify-edge-login.sh && echo SHELL_SYNTAX_OK",
+      "python3 -c \"import pathlib,sys; missing=[str(p) for p in ['Dockerfile','entrypoint.sh','compose.coolify.yaml','deploy/cloudflared-captcha.service','deploy/coolify-provision.sh','.dockerignore'] if not pathlib.Path(p).exists()]; sys.exit('missing deployment files: '+', '.join(missing)) if missing else print('DEPLOY_FILES_OK')\"",
+      "tmp=$(mktemp -d) && printf '# placeholder\\n' > \"$tmp/env\" && CAPTCHA_ENV_FILE=\"$tmp/env\" CAPTCHA_BROWSER_DIR=\"$tmp/browser\" CAPTCHA_FONTS_DIR=\"$tmp/fonts\" CAPTCHA_GEOIP_DIR=\"$tmp/geoip\" CAPTCHA_ARKOSE_MODELS_DIR=\"$tmp/arkose\" CAPTCHA_APIKEY_FILE=\"$tmp/apikey.txt\" docker compose -f compose.coolify.yaml config --quiet && echo COMPOSE_VALID; rc=$?; rm -rf \"$tmp\"; exit $rc",
+      "python3 -c \"import pathlib,re,sys; t=pathlib.Path('compose.coolify.yaml').read_text(); bad=[m for m in re.findall(r'^\\\\s*-\\\\s*(\\\\S+)', t, re.M) if m.startswith(('./','../'))]; sys.exit('relative bind mount found: '+str(bad)) if bad else print('MOUNTS_ABSOLUTE_OK')\"",
+      "python3 -c \"import pathlib,sys; t=pathlib.Path('compose.coolify.yaml').read_text(); ok='127.0.0.1:8877:8877' in t and 'SOLVER_BIND_HOST: 0.0.0.0' in t; sys.exit('publish/bind shape wrong') if not ok else print('BIND_SHAPE_OK')\"",
+      "python3 -c \"import pathlib,sys; p=pathlib.Path('.env.production'); t=p.read_text() if p.exists() else ''; d=chr(36); bad=[l.split('=')[0] for l in t.splitlines() if '=' in l and not l.strip().startswith('#') and d in l and d*2 not in l]; sys.exit('unescaped '+d+' in .env.production ('+', '.join(bad)+') \u2014 docker compose interpolates env_file values, so a scrypt digest arrives truncated; write '+d*2+' instead') if bad else print('ENV_ESCAPING_OK')\""
     ],
     "start": null,
     "port": null,
     "readinessPath": "/",
     "evidence": [
-      "preflight.py asserts the browser build this solver resolves is present, executable and launchable, and honours CLOAKBROWSER_BINARY_PATH when set.",
-      "Syntax phase: all *.py under the solver packages must parse; a bad edit in a solver would otherwise only surface when that captcha type is requested.",
-      "Import phase: every browser solver module must import cleanly; this catches the concurrency refactor (solve_slot import) breaking a module.",
-      "No live /solve call in the recipe: solving needs network + a real captcha target, is slow and non-deterministic, and the service runs as a systemd unit. Live checks live in tools/bench_parallel.py and tools/smoke_all_types.py, run manually.",
-      ".venv is python 3.14 with --system-site-packages (needs the user-site cloakbrowser wrapper)."
+      "tools/check_license_patch.py asserts the pinned browser build carries the license patch on every REQUIRED symbol (Start/End) and reports the optional fingerprint-key-handshake symbol that costs ~25s per launch when unpatched. Proven to fail: run against chrome.orig-backup it exits 1 naming both unpatched symbols.",
+      "tools/check_env_example.py (upstream) asserts .env.example covers every variable the code reads and boots a working configuration.",
+      "Syntax phase: every *.py under the solver packages must parse; a bad edit in a solver would otherwise only surface when that captcha type is requested.",
+      "Shell syntax phase: bash -n on every script the deployment runs.",
+      "Deploy-file phase: the container artifacts must exist \u2014 a missing Dockerfile/compose/unit is a broken deployment, not a style issue.",
+      "Compose phase: `docker compose config --quiet` against throwaway paths, so an interpolation error or a broken YAML structure fails here instead of at deploy time. Self-contained by design: a fresh clone has no production env file, and requiring one would make the recipe unrunnable outside the deployed host.",
+      "Mount phase: bind mounts must be absolute or variable-driven. A relative mount resolves against Coolify's own application directory, so the app boots against an empty database \u2014 the failure a health check cannot see.",
+      "Bind shape phase: the app binds the container interface while the publish stays on host loopback. Both halves are required \u2014 binding 127.0.0.1 inside the container makes the publish unreachable, and publishing on 0.0.0.0 exposes the service directly.",
+      "Env-escaping phase: docker compose interpolates $VAR inside env_file values, so an unescaped scrypt digest arrives truncated at the first $ and the console rejects every password. Runs only when .env.production exists (it is gitignored), so a fresh clone reports OK.",
+      "No live /solve call and no container start: solving needs network plus a real captcha target, and the container is already running under Coolify with its own tunnel. Live checks live in tools/verify-edge.sh, tools/verify-edge-login.sh and tools/bench_parallel_http.sh, run manually."
     ]
   },
-  "updatedAt": "2026-10-07T09:00:00+07:00"
+  "updatedAt": "2026-10-08T02:40:00+07:00"
 }
