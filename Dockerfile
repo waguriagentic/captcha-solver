@@ -61,10 +61,13 @@ WORKDIR /app
 # Python dependencies. cloakbrowser is pinned: the deployment validates one
 # wrapper version against one browser build, and a floating wrapper can change
 # launch behaviour (flags, geoip resolution) without the binary changing.
+# geoip2 + socksio are the wrapper's `geoip` extra: a geoip=True launch raises
+# before any browser starts when they are missing.
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir --retries 8 --timeout 60 \
       fastapi uvicorn pydantic pillow \
       onnxruntime opencv-python-headless numpy \
+      geoip2 socksio \
       "cloakbrowser==0.5.11"
 
 # Application source.

@@ -28,13 +28,14 @@ BRANCH="${BRANCH:-main}"
 COMPOSE_LOCATION="${COMPOSE_LOCATION:-/compose.coolify.yaml}"
 
 # Host paths the compose interpolates. Override any of these on the command
-# line; the defaults match the layout this deployment was built for.
-CAPTCHA_ENV_FILE="${CAPTCHA_ENV_FILE:-/home/waguri/SAAS/captcha-solver/.env.production}"
-CAPTCHA_BROWSER_DIR="${CAPTCHA_BROWSER_DIR:-/home/waguri/.cloakbrowser/chromium-154.0.8037.57.1-pro}"
-CAPTCHA_FONTS_DIR="${CAPTCHA_FONTS_DIR:-/home/waguri/SAAS/captcha-solver-host/fonts}"
-CAPTCHA_GEOIP_DIR="${CAPTCHA_GEOIP_DIR:-/home/waguri/SAAS/captcha-solver-host/geoip}"
-CAPTCHA_ARKOSE_MODELS_DIR="${CAPTCHA_ARKOSE_MODELS_DIR:-/home/waguri/SAAS/captcha-solver-host/arkose-models}"
-CAPTCHA_APIKEY_FILE="${CAPTCHA_APIKEY_FILE:-/home/waguri/SAAS/captcha-solver-host/apikey.txt}"
+# line. The defaults below assume a checkout at ~/SAAS/captcha-solver; the
+# browser build is whatever `~/.cloakbrowser/` holds on the deployment host.
+CAPTCHA_ENV_FILE="${CAPTCHA_ENV_FILE:-$HOME/SAAS/captcha-solver/.env.production}"
+CAPTCHA_BROWSER_DIR="${CAPTCHA_BROWSER_DIR:-$HOME/.cloakbrowser/chromium-154.0.8037.57.1-pro}"
+CAPTCHA_FONTS_DIR="${CAPTCHA_FONTS_DIR:-$HOME/SAAS/captcha-solver-host/fonts}"
+CAPTCHA_GEOIP_DIR="${CAPTCHA_GEOIP_DIR:-$HOME/SAAS/captcha-solver-host/geoip}"
+CAPTCHA_ARKOSE_MODELS_DIR="${CAPTCHA_ARKOSE_MODELS_DIR:-$HOME/SAAS/captcha-solver-host/arkose-models}"
+CAPTCHA_APIKEY_FILE="${CAPTCHA_APIKEY_FILE:-$HOME/SAAS/captcha-solver-host/apikey.txt}"
 
 psql() { $SUDO docker exec -i coolify-db psql -U coolify -d coolify -tAc "$1"; }
 

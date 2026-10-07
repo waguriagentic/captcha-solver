@@ -10,6 +10,12 @@ pillow
 onnxruntime
 opencv-python-headless
 numpy
+# GeoIP alignment (the *_GEOIP flags): the wrapper resolves the proxy's exit IP
+# to a timezone/locale through the mounted GeoLite2 database. Without these two
+# a geoip=True launch raises "geoip2 is required for geoip=True" before any
+# browser starts — the whole solve fails, not just the alignment.
+geoip2
+socksio
 # Note: whisper/curl are NOT required — the audio-challenge path was removed
 # (it was dead code and reliably IP-blocked). reCAPTCHA/hCaptcha image challenges
 # use the Mistral vision key pool (stdlib urllib, no extra dep).
