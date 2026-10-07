@@ -50,6 +50,13 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # Debian mirror for the image build. The default CDN collapses to tens of
+      # KB/s on some networks, which is long enough for the build job's own
+      # timeout to fire; a nearby mirror finishes the same download in seconds.
+      # Empty means "use the base image's own sources" (fine on a
+      # well-connected host).
+      args:
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-}
     image: captcha-solver:coolify
 
     # Production configuration. Absolute, because Coolify's project directory

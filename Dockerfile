@@ -25,6 +25,28 @@ RUN npm run build
 # ── Stage 2: runtime ────────────────────────────────────────────────────────
 FROM python:3.12-slim
 
+# Optional Debian mirror override, as a build arg.
+#
+# The default mirror (deb.debian.org) is a CDN whose throughput to some
+# networks collapses to tens of KB/s — observed taking ~50 minutes to fetch
+# 134 MB, long enough that the CI job's own timeout fires mid-build. A mirror
+# close to the build host turns that into under a minute. Pass it at build
+# time:
+#
+#   docker build --build-arg DEBIAN_MIRROR=mirror.example.id/debian .
+#
+# Left empty, the image's own sources.list is used unchanged, so a build on a
+# well-connected host needs no extra configuration.
+ARG DEBIAN_MIRROR=""
+RUN if [ -n "$DEBIAN_MIRROR" ]; then \
+      sed -i "s|^URIs: http://deb.debian.org/debian|URIs: http://$DEBIAN_MIRROR|" \
+        /etc/apt/sources.list.d/debian.sources; \
+      sed -i "s|^URIs: http://deb.debian.org/debian-security|URIs: http://$DEBIAN_MIRROR|" \
+        /etc/apt/sources.list.d/debian.sources 2>/dev/null || true; \
+      echo "using Debian mirror: $DEBIAN_MIRROR"; \
+      grep -E '^URIs:' /etc/apt/sources.list.d/debian.sources; \
+    fi
+
 # Chromium runtime dependencies. Mirrors the set the CloakBrowser Manager image
 # installs (a known-good list for this binary) plus the X server the headed
 # solvers need.
