@@ -323,6 +323,31 @@ def _field_docs() -> dict[str, dict[str, Any]]:
     return out
 
 
+def _public_api_base() -> str:
+    """The API origin shown in the docs and the landing page.
+
+    Resolution order, so a correctly configured deployment never advertises a
+    placeholder:
+
+      1. SOLVER_API_PUBLIC_URL — explicit, wins always.
+      2. https://<SOLVER_API_HOST> — derived from the host the operator already
+         had to set for isolation, so the common case needs no extra variable.
+      3. A placeholder, and a warning: this deployment has not named its API
+         origin, which is almost certainly a misconfiguration.
+
+    (2) is why this is a function and not a module constant: SOLVER_API_HOST is
+    read at request time, and a module-level default would freeze the
+    placeholder into the first response.
+    """
+    explicit = os.getenv("SOLVER_API_PUBLIC_URL", "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+    host = os.getenv("SOLVER_API_HOST", "").strip()
+    if host:
+        return f"https://{host}".rstrip("/")
+    return "https://api.example.com"
+
+
 @router.get("/api/v1/meta", tags=["meta"], summary="Public service metadata (no auth)")
 async def meta():
     """Public by design: the landing page needs to name the API host and list
@@ -337,7 +362,7 @@ async def meta():
     return {
         "service": "captcha-solver",
         "version": server.app.version,
-        "api_base_url": os.getenv("SOLVER_API_PUBLIC_URL", "https://api.example.com"),
+        "api_base_url": _public_api_base(),
         "types": [
             {"type": t, "label": _TYPE_SPEC.get(t, {}).get("label", t)}
             for t in server.SUPPORTED
@@ -376,7 +401,7 @@ async def reference():
 
     return {
         "service": {"name": "Sonogami Solver", "version": server.app.version},
-        "api_base_url": os.getenv("SOLVER_API_PUBLIC_URL", "https://api.example.com"),
+        "api_base_url": _public_api_base(),
         "endpoints": endpoints,
         "fields": _field_docs(),
         "types": [
@@ -533,12 +558,25 @@ async def stream(request: Request, _: auth.Session = Depends(require_admin)):
     import json
 
     async def frames():
-        last_signature: tuple | None = None
+        # Send one snapshot immediately. Without this, a client connecting to an
+        # idle service receives nothing at all until the next solve, so the
+        # console cannot tell "connected, nothing happening" from "not
+        # connected" — it showed "reconnecting" right after a successful login
+        # on a fresh box, which is exactly the bug this prevents.
+        import server
+
+        last_signature: tuple | None = (
+            len(server._solve_log),
+            server._solve_log[0]["timestamp"] if server._solve_log else 0.0,
+            len(server._solve_current),
+            server._solve_total,
+        )
+        yield f"event: snapshot\ndata: {json.dumps(_console_payload())}\n\n"
+
         idle_ticks = 0
         while True:
             if await request.is_disconnected():
                 break
-            import server
 
             newest = server._solve_log[0]["timestamp"] if server._solve_log else 0.0
             signature = (len(server._solve_log), newest, len(server._solve_current),

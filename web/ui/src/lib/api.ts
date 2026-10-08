@@ -293,21 +293,46 @@ export const api = {
   /**
    * Live console stream.
    *
+   * Three distinct things are reported, because the console must not confuse
+   * them:
+   *
+   *   connection  — is the transport up? (connected | disconnected)
+   *   activity    — has a solve event arrived recently? (derived by the caller)
+   *
+   * An idle backend sends no snapshots at all (that is the point of pushing on
+   * change), so "no data for N seconds" is NOT a disconnection. It is reported
+   * as idle. Disconnection is only ever a transport fact: a fetch failure, a
+   * non-200, or the byte stream ending/stalling past the heartbeat window.
+   *
+   * Reconnects are automatic with backoff, so the caller's "disconnected"
+   * state genuinely means "trying to get back", not "gave up".
+   *
    * EventSource cannot set headers, so this is a hand-rolled SSE reader over
-   * fetch: it keeps the session cookie (same-origin) and, unlike EventSource,
-   * a 401 surfaces as an error the caller can act on instead of an endless
+   * fetch: it keeps the session cookie (same-origin) and, unlike EventSource, a
+   * 401 surfaces as an error the caller can act on instead of an endless
    * silent reconnect.
    *
    * Returns a teardown function.
    */
   stream(
-    onSnapshot: (snapshot: Overview) => void,
-    onError: (error: unknown) => void,
+    handlers: {
+      onSnapshot: (snapshot: Overview) => void;
+      onConnection: (connected: boolean) => void;
+      onError: (error: unknown) => void;
+    },
     signal: AbortSignal,
   ): () => void {
+    const { onSnapshot, onConnection, onError } = handlers;
     let stopped = false;
+    let attempt = 0;
 
-    (async () => {
+    // Server heartbeat cadence; declaring a stall at 2.5x tolerates one lost
+    // beat without flapping the indicator.
+    const HEARTBEAT_MS = 10_000;
+    const STALE_MS = HEARTBEAT_MS * 2.5;
+
+    /** One connection's lifetime. Resolves false when a retry is warranted. */
+    async function consume(): Promise<boolean> {
       let response: Response;
       try {
         response = await fetch(`${BASE}/stream`, {
@@ -317,28 +342,48 @@ export const api = {
           signal,
         });
       } catch (cause) {
-        if (!stopped) onError(cause);
-        return;
+        if ((cause as Error)?.name === "AbortError") throw cause;
+        onError(cause);
+        return false;
       }
 
-      if (!response.ok) {
+      // An auth failure is terminal: retrying would hammer the endpoint with a
+      // dead cookie. Everything else is transient.
+      if (response.status === 401) {
+        onError(new ApiError(401, "Session expired"));
+        stopped = true;
+        return false;
+      }
+      if (!response.ok || !response.body) {
         onError(new ApiError(response.status, "Live stream unavailable"));
-        return;
+        return false;
       }
-      if (!response.body) {
-        onError(new ApiError(0, "Streaming unsupported by this browser"));
-        return;
-      }
+
+      onConnection(true);
+      attempt = 0;
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      let lastByte = Date.now();
 
       try {
         while (!stopped) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
+          // Race the read against the heartbeat window, so a connection that
+          // dies without a FIN (a killed proxy, a dropped tunnel) still
+          // surfaces as a disconnect instead of hanging forever.
+          const beat = Promise.withResolvers<"stale">();
+          const timer = window.setTimeout(() => beat.resolve("stale"), STALE_MS);
+          const read = await Promise.race([reader.read(), beat.promise]);
+          window.clearTimeout(timer);
+
+          if (read === "stale") {
+            if (Date.now() - lastByte > STALE_MS) return false;
+            continue;
+          }
+          if (read.done) return false;
+          lastByte = Date.now();
+          buffer += decoder.decode(read.value, { stream: true });
 
           // Frames are separated by a blank line; keep the trailing partial.
           let split: number;
@@ -346,7 +391,7 @@ export const api = {
             const frame = buffer.slice(0, split);
             buffer = buffer.slice(split + 2);
             for (const line of frame.split("\n")) {
-              if (!line.startsWith("data:")) continue; // comments are keep-alives
+              if (!line.startsWith("data:")) continue; // keep-alive comment
               try {
                 onSnapshot(JSON.parse(line.slice(5).trim()) as Overview);
               } catch {
@@ -356,12 +401,37 @@ export const api = {
           }
         }
       } catch (cause) {
-        if (!stopped && (cause as Error)?.name !== "AbortError") onError(cause);
+        if ((cause as Error)?.name === "AbortError") throw cause;
+        onError(cause);
+        return false;
       }
+      return false;
+    }
+
+    (async () => {
+      while (!stopped) {
+        try {
+          await consume();
+        } catch {
+          break; // aborted
+        }
+        if (stopped) break;
+
+        // Transport is down: say so, then back off and retry. The indicator
+        // stays honest because it tracks the transport, never the data rate.
+        onConnection(false);
+        attempt = Math.min(attempt + 1, 6);
+        const wait = Math.min(1000 * 2 ** attempt, 15_000);
+        const backoff = Promise.withResolvers<void>();
+        window.setTimeout(backoff.resolve, wait);
+        await backoff.promise;
+      }
+      onConnection(false);
     })();
 
     return () => {
       stopped = true;
+      onConnection(false);
     };
   },
 

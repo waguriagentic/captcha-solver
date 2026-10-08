@@ -69,18 +69,22 @@ function TypePanel({ spec, apiBase }: { spec: ReferenceType; apiBase: string }) 
   const [open, setOpen] = useState(false);
 
   const example = useMemo(() => {
+    // Placeholders per field. Every value here must be obviously fake: a
+    // reader may paste this body straight into a shell, and a realistic-looking
+    // sitekey invites a real request against a real site.
+    const placeholders: Record<string, string> = {
+      url: "https://target.example.com",
+      sitekey: "0x4AAAAAAA_PLACEHOLDER",
+      public_key: "A0DE7B75-1138-44F2-B132-ED188CEB66F3",
+      scene_id: "1xxxxxxx",
+      prefix: "13lbkb5",
+    };
     const body: Record<string, unknown> = { type: spec.type };
     for (const field of spec.requires) {
-      body[field] =
-        field === "url"
-          ? "https://target.com"
-          : field === "sitekey"
-            ? "0x4AAAAAAA..."
-            : field === "public_key"
-              ? "A0DE7B75-1138-44F2-B132-ED188CEB66F3"
-              : field === "scene_id"
-                ? "1xxxxxxx"
-                : "13lbkb5";
+      // Unknown field -> name it explicitly instead of reusing another field's
+      // placeholder, which is how every unrecognised key used to render as the
+      // Aliyun prefix.
+      body[field] = placeholders[field] ?? `<${field}>`;
     }
     return JSON.stringify(body, null, 2);
   }, [spec]);

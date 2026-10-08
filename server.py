@@ -12,9 +12,11 @@ from collections import deque
 from typing import Any, Optional
 from urllib.parse import urlparse
 
-from fastapi import Body, Depends, FastAPI, HTTPException, Query
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer
 from pydantic import BaseModel, Field
+from starlette.responses import Response
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("captcha-solver")
@@ -703,6 +705,43 @@ async def _gate(request, call_next):
             return PlainTextResponse("Unauthorized", status_code=401,
                                      headers={"WWW-Authenticate": "Bearer"})
     return await call_next(request)
+
+
+# /openapi.json is a human-facing document as much as a machine one — the docs
+# page links to it — so serve it indented rather than as one 25 KB line.
+#
+# Two things make this fiddly, both verified against FastAPI 0.136 rather than
+# assumed:
+#
+#   1. FastAPI registers its own compact /openapi.json route in __init__, by
+#      calling self.setup(). Overriding setup() afterwards is therefore too
+#      late — the route already exists. Patching the class method before the
+#      instance is constructed is not possible either, so we replace the route.
+#   2. Starlette matches routes in order and stops at the first hit, so the
+#      compact route has to be REMOVED, not just shadowed. Removing it and
+#      adding ours at the end is what makes ours win.
+#
+# The endpoint returns a pre-rendered string: JSONResponse serialises compact
+# regardless of any indent argument, so the text is built here.
+def _install_pretty_openapi() -> None:
+    if not app.openapi_url:
+        return
+
+    async def pretty_openapi(request: Request) -> Response:
+        return Response(
+            content=json.dumps(app.openapi(), indent=2, ensure_ascii=False),
+            media_type="application/json",
+        )
+
+    app.router.routes = [
+        route for route in app.router.routes
+        if not (getattr(route, "path", None) == app.openapi_url
+                and getattr(route, "name", None) == "openapi")
+    ]
+    app.add_route(app.openapi_url, pretty_openapi, include_in_schema=False)
+
+
+_install_pretty_openapi()
 
 
 @app.middleware("http")

@@ -67,20 +67,59 @@ function Wordmark() {
   );
 }
 
-/** Connection state. `live` animates only while frames are actually arriving. */
-function LiveBadge({ state }: { state: "live" | "idle" | "offline" }) {
+/**
+ * Connection indicator. Two orthogonal facts, never conflated:
+ *
+ *   connection — is the stream up?  connected | disconnected (retrying)
+ *   activity   — is work arriving?  live (recent solves) | idle (none)
+ *
+ * "Idle" means the backend is healthy and simply has nothing to report; it
+ * sends no snapshots while nothing changes, by design. "Reconnecting" is
+ * reserved for a genuine transport failure, which the stream layer reports and
+ * retries with backoff.
+ *
+ * The counter appears ONLY while reconnecting, where it answers the one
+ * question that matters then: how long has the data been stale. Showing it next
+ * to "live" was noise — an incrementing number that told the reader nothing.
+ */
+function LiveBadge({
+  connected,
+  active,
+  paused,
+  disconnectedFor,
+}: {
+  connected: boolean;
+  active: boolean;
+  paused: boolean;
+  /** Seconds since the stream dropped, or null while it is up. */
+  disconnectedFor: number | null;
+}) {
+  const state = !connected ? "offline" : paused ? "paused" : active ? "live" : "idle";
   const tones = {
     live: "border-accent/35 bg-accent/10 text-accent",
-    idle: "border-line-strong bg-raised text-faint",
+    idle: "border-line-strong bg-raised text-muted",
+    paused: "border-line-strong bg-raised text-faint",
     offline: "border-danger/35 bg-danger/10 text-danger",
   } as const;
-  const dots = { live: "ok", idle: "idle", offline: "bad" } as const;
+  const dots = { live: "ok", idle: "idle", paused: "idle", offline: "bad" } as const;
+  const labels = { live: "live", idle: "idle", paused: "paused", offline: "reconnecting" } as const;
+  const hints = {
+    live: "Connected. Solves are arriving on the stream.",
+    idle: "Connected, no solves recently. The stream only pushes when something changes.",
+    paused: "Stream paused. The last snapshot stays on screen; resume to catch up.",
+    offline: "The stream dropped. Retrying with backoff; the snapshot on screen is stale.",
+  } as const;
+
   return (
     <span
       className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 font-mono text-[10.5px] tracking-[0.1em] uppercase ${tones[state]}`}
+      title={hints[state]}
     >
       <StatusDot tone={dots[state]} />
-      {state === "live" ? "live" : state === "idle" ? "paused" : "reconnecting"}
+      {labels[state]}
+      {state === "offline" && disconnectedFor !== null ? (
+        <span className="text-danger/80 normal-case">{disconnectedFor}s</span>
+      ) : null}
     </span>
   );
 }
@@ -446,11 +485,12 @@ export function DashboardPage() {
   const [snapshot, setSnapshot] = useState<Overview | null>(null);
   const [types, setTypes] = useState<TypeSpec[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [connection, setConnection] = useState<"live" | "idle" | "offline">("idle");
+  const [connection, setConnection] = useState<"connecting" | "connected">("connecting");
+  const [lastEvent, setLastEvent] = useState<number | null>(null);
+  const [droppedAt, setDroppedAt] = useState<number | null>(null);
   const [typeFilter, setTypeFilter] = useState("");
   const [failedOnly, setFailedOnly] = useState(false);
   const [paused, setPaused] = useState(false);
-  const [lastFrame, setLastFrame] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now() / 1000);
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
@@ -470,8 +510,12 @@ export function DashboardPage() {
   // browsers or proxies where SSE is unavailable.
   const refresh = useCallback(async () => {
     try {
-      setSnapshot(await api.overview(10));
-      setLastFrame(Date.now());
+      const next = await api.overview(10);
+      setSnapshot(next);
+      // Seed the activity clock from the newest event the fetch returned, so a
+      // fallback load does not read as "live" merely because we just fetched.
+      const newest = next.recent[0]?.timestamp;
+      setLastEvent(newest ? newest * 1000 : null);
       setError(null);
     } catch (cause) {
       handleError(cause);
@@ -483,20 +527,32 @@ export function DashboardPage() {
     void refresh();
 
     const stop = api.stream(
-      (next) => {
-        if (pausedRef.current) return;
-        setSnapshot(next);
-        setLastFrame(Date.now());
-        setConnection("live");
-        setError(null);
-      },
-      (cause) => {
-        if ((cause as Error)?.name === "AbortError") return;
-        if (cause instanceof ApiError && cause.isAuthError) {
-          markExpired();
-          return;
-        }
-        setConnection("offline");
+      {
+        onSnapshot: (next) => {
+          if (pausedRef.current) return;
+          setSnapshot(next);
+          setLastEvent(Date.now());
+          setError(null);
+        },
+        onConnection: (connected) => {
+          setConnection(connected ? "connected" : "connecting");
+          // Stamp the moment the transport FIRST went down and keep it across
+          // retries, so the counter reads "stale for N seconds" rather than
+          // resetting on every reconnect attempt.
+          setDroppedAt((previous) => (connected ? null : (previous ?? Date.now())));
+        },
+        onError: (cause) => {
+          if ((cause as Error)?.name === "AbortError") return;
+          if (cause instanceof ApiError && cause.isAuthError) {
+            markExpired();
+            return;
+          }
+          // Transport errors already move the badge via onConnection; only
+          // surface something the operator can act on.
+          if (cause instanceof ApiError && cause.status !== 0) {
+            setError(cause.message);
+          }
+        },
       },
       controller.signal,
     );
@@ -518,17 +574,11 @@ export function DashboardPage() {
     return () => controller.abort();
   }, [handleError]);
 
-  // Drives the in-flight elapsed counters between frames, and demotes a silent
-  // stream so a dead connection is visible rather than looking merely idle.
+  // Drives the in-flight elapsed counters between snapshots. It does NOT touch
+  // the connection state: the transport layer owns that, and an absence of
+  // solves is idleness, not disconnection.
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      setNow(Date.now() / 1000);
-      if (pausedRef.current) return;
-      setLastFrame((previous) => {
-        if (previous && Date.now() - previous > 15_000) setConnection("offline");
-        return previous;
-      });
-    }, 1000);
+    const timer = window.setInterval(() => setNow(Date.now() / 1000), 1000);
     return () => window.clearInterval(timer);
   }, []);
 
@@ -551,13 +601,27 @@ export function DashboardPage() {
   const inFlight = snapshot?.current ?? [];
   const system = snapshot?.system;
 
+  // "Live" is an activity fact, not a transport one: a solve landed within the
+  // last 90s. An idle service sends nothing at all, which is correct — the
+  // stream pushes on change only.
+  const ACTIVE_WINDOW_MS = 90_000;
+  const active =
+    lastEvent !== null && Date.now() - lastEvent < ACTIVE_WINDOW_MS;
+
   return (
     <div className="min-h-[100dvh]">
       <header className="sticky top-0 z-40 border-b border-line bg-base/85 backdrop-blur-md">
         <div className={`${SHELL} flex h-15 items-center justify-between gap-4`}>
           <div className="flex items-center gap-3.5">
             <Wordmark />
-            <LiveBadge state={paused ? "idle" : connection} />
+            <LiveBadge
+              connected={connection === "connected"}
+              active={active}
+              paused={paused}
+              disconnectedFor={
+                droppedAt === null ? null : Math.max(0, Math.round(now - droppedAt / 1000))
+              }
+            />
           </div>
           <div className="flex items-center gap-2">
             <span className="hidden font-mono text-[12px] text-faint sm:block">{user}</span>
@@ -591,7 +655,9 @@ export function DashboardPage() {
         <Card className="mb-5 overflow-hidden">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-3">
             <div className="flex items-center gap-2.5">
-              <StatusDot tone={paused ? "idle" : connection === "live" ? "ok" : "bad"} />
+              <StatusDot
+                tone={!connection.includes("connected") ? "bad" : paused ? "idle" : active ? "ok" : "idle"}
+              />
               <span className="font-mono text-[10.5px] tracking-[0.14em] text-faint uppercase">
                 solve activity
               </span>
@@ -607,7 +673,11 @@ export function DashboardPage() {
               </span>
               <span>height = latency</span>
               <span className="hidden sm:inline">
-                {lastFrame ? `frame ${relativeTime(lastFrame / 1000)}` : "awaiting first frame"}
+                {lastEvent
+                  ? `last event ${relativeTime(lastEvent / 1000)}`
+                  : connection === "connected"
+                    ? "connected, no events yet"
+                    : "connecting"}
               </span>
             </div>
           </div>
@@ -851,7 +921,9 @@ export function DashboardPage() {
                         <Chip tone="ok">ignored</Chip>
                       )],
                       ["Stream", <span className="font-mono text-[12px]">
-                        {paused ? "paused" : connection}
+                        {!connection.includes("connected") ? "reconnecting"
+                          : paused ? "paused"
+                          : active ? "live" : "idle"}
                       </span>],
                     ] as Array<[string, React.ReactNode]>
                   ).map(([label, value]) => (

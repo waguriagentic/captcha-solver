@@ -10,6 +10,12 @@
 # as placeholders; this script rewrites them to the actual checkout path and
 # the invoking user before installing.
 #
+# The dashboard and the solver API are the same process behind two hostnames
+# (dash.* and api.*). Only ONE backend is needed: point both tunnel ingress
+# rules at 127.0.0.1:8877 and let the app decide by Host header. Config for
+# that lives in the tunnel and the reverse proxy, not here — see the
+# "Admin dashboard" section of the README.
+#
 # Local binary pin: if a `.cloakbrowser-pin` sidecar exists in the repo root
 # (gitignored, machine-specific), its content is injected as
 # CLOAKBROWSER_BINARY_PATH so a wrapper auto-update cannot swap the browser
