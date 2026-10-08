@@ -18,6 +18,10 @@ from fastapi.security import HTTPBearer
 from pydantic import BaseModel, Field
 from starlette.responses import Response
 
+# Imported early: _PUBLIC_URL below derives from the same config the host policy
+# reads, so both surfaces advertise one URL rather than two that can disagree.
+from web import hosts as _hosts
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("captcha-solver")
 
@@ -43,16 +47,24 @@ _TAGS = [
     {"name": "monitoring", "description": "Liveness, current tasks, recent solve log."},
 ]
 
-# Public base URL shown in the OpenAPI docs (contact + servers dropdown). The repo ships a
-# neutral placeholder; the live service injects its real domain at runtime via SOLVER_PUBLIC_URL.
-_PUBLIC_URL = os.getenv("SOLVER_PUBLIC_URL", "https://solver.example.com")
+# Public base URL advertised in the OpenAPI schema (contact + servers dropdown)
+# and on the landing page. Derived by web.hosts from SOLVER_API_PUBLIC_URL or,
+# failing that, the SOLVER_API_HOST an isolated deployment has already set — so
+# a correctly configured service never publishes a placeholder.
+_PUBLIC_URL = _hosts.public_api_base()
+if _hosts.is_placeholder(_PUBLIC_URL):
+    log.warning(
+        "No public API origin configured: the docs and landing page will show "
+        "%s. Set SOLVER_API_HOST (or SOLVER_API_PUBLIC_URL) to your real domain.",
+        _PUBLIC_URL,
+    )
 
 app = FastAPI(
     title="Sonogami Solver",
     description=_DESCRIPTION,
     version="1.0.0",
     openapi_tags=_TAGS,
-    contact={"name": "solver", "url": _PUBLIC_URL},
+    contact={"name": "solver", "url": _PUBLIC_URL.rstrip("/")},
     servers=[
         {"url": _PUBLIC_URL, "description": "Public (Bearer token required)"},
         {"url": "http://127.0.0.1:8877", "description": "Local (no auth)"},
@@ -728,8 +740,15 @@ def _install_pretty_openapi() -> None:
         return
 
     async def pretty_openapi(request: Request) -> Response:
+        schema = app.openapi()
+        # FastAPI normalises contact.url by appending a trailing slash while the
+        # servers list keeps the bare origin, so the schema contradicted itself.
+        # Normalise both here rather than fighting the generator.
+        contact = schema.get("info", {}).get("contact")
+        if isinstance(contact, dict) and isinstance(contact.get("url"), str):
+            contact["url"] = contact["url"].rstrip("/")
         return Response(
-            content=json.dumps(app.openapi(), indent=2, ensure_ascii=False),
+            content=json.dumps(schema, indent=2, ensure_ascii=False),
             media_type="application/json",
         )
 

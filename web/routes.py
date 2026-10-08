@@ -31,9 +31,37 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from web import auth
+from web import auth, hosts
 
 log = __import__("logging").getLogger("captcha-solver.web")
+
+
+def _app_module():
+    """The ONE server module object, whatever name the process started it under.
+
+    ``python server.py`` executes it as ``__main__``, while this file's
+    ``import server`` would create a SECOND module object with its own
+    module-level state. The ring buffer, the in-flight map and the lifetime
+    counter all live in that state, so the two copies disagreed: a solve run
+    through the API logged into ``__main__`` and the console — which imports
+    ``server`` — saw an empty buffer, while ``/logs`` (also ``__main__``) showed
+    the event. Both were "correct" and the console looked broken.
+
+    Resolving through ``sys.modules`` collapses them to whichever object the
+    entrypoint created. Callers must go through this instead of importing
+    ``server`` directly.
+    """
+    import sys
+
+    module = sys.modules.get("__main__")
+    # Only trust __main__ when it really is this app (not a test runner, REPL or
+    # a wrapper that happens to be __main__).
+    if module is not None and getattr(module, "__file__", None) and \
+            module.__file__.replace("\\", "/").endswith("server.py"):
+        return module
+    import server
+
+    return server
 
 router = APIRouter()
 
@@ -296,7 +324,7 @@ def _field_docs() -> dict[str, dict[str, Any]]:
     validation that actually runs: a field added to the model appears here on
     the next request, with its real description and examples.
     """
-    import server
+    server = _app_module()
 
     out: dict[str, dict[str, Any]] = {}
     for name, field in server.SolveRequest.model_fields.items():
@@ -326,26 +354,12 @@ def _field_docs() -> dict[str, dict[str, Any]]:
 def _public_api_base() -> str:
     """The API origin shown in the docs and the landing page.
 
-    Resolution order, so a correctly configured deployment never advertises a
-    placeholder:
-
-      1. SOLVER_API_PUBLIC_URL — explicit, wins always.
-      2. https://<SOLVER_API_HOST> — derived from the host the operator already
-         had to set for isolation, so the common case needs no extra variable.
-      3. A placeholder, and a warning: this deployment has not named its API
-         origin, which is almost certainly a misconfiguration.
-
-    (2) is why this is a function and not a module constant: SOLVER_API_HOST is
-    read at request time, and a module-level default would freeze the
-    placeholder into the first response.
+    Delegates to web.hosts.public_api_base so the OpenAPI schema, the landing
+    page and the reference page can never advertise different origins — they
+    previously used two separate variables, and only one of them was wired to
+    the deployment's hostname.
     """
-    explicit = os.getenv("SOLVER_API_PUBLIC_URL", "").strip()
-    if explicit:
-        return explicit.rstrip("/")
-    host = os.getenv("SOLVER_API_HOST", "").strip()
-    if host:
-        return f"https://{host}".rstrip("/")
-    return "https://api.example.com"
+    return hosts.public_api_base()
 
 
 @router.get("/api/v1/meta", tags=["meta"], summary="Public service metadata (no auth)")
@@ -357,7 +371,7 @@ async def meta():
     policy, no configuration. If a field would help an attacker enumerate this
     box, it belongs behind require_admin instead.
     """
-    import server
+    server = _app_module()
 
     return {
         "service": "captcha-solver",
@@ -379,7 +393,7 @@ async def reference():
     publishes at /openapi.json, presented for humans. It carries no solve
     history, no host policy and no credentials.
     """
-    import server
+    server = _app_module()
 
     endpoints = [
         {"method": "POST", "path": "/solve", "auth": "bearer",
@@ -415,7 +429,7 @@ async def reference():
 
 @router.get("/api/v1/types", tags=["meta"], summary="Supported types + field requirements")
 async def types(_: auth.Session = Depends(require_admin)):
-    import server  # lazy: avoids a circular import at module load
+    server = _app_module()  # lazy: avoids a circular import at module load
 
     return {
         "types": [
@@ -438,7 +452,7 @@ async def dashboard_solve(body: dict, _: auth.Session = Depends(require_admin)):
     which imports this module; validating it lazily keeps that cycle out of
     module import while still producing the usual 422 shape.
     """
-    import server
+    server = _app_module()
     from pydantic import ValidationError
 
     try:
@@ -513,7 +527,7 @@ def _console_payload(lines: int = 10) -> dict[str, Any]:
     One builder for both so a polled response and a pushed one can never
     disagree about shape.
     """
-    import server
+    server = _app_module()
 
     events = list(server._solve_log)
     return {
@@ -563,7 +577,7 @@ async def stream(request: Request, _: auth.Session = Depends(require_admin)):
         # console cannot tell "connected, nothing happening" from "not
         # connected" — it showed "reconnecting" right after a successful login
         # on a fresh box, which is exactly the bug this prevents.
-        import server
+        server = _app_module()
 
         last_signature: tuple | None = (
             len(server._solve_log),
@@ -609,7 +623,7 @@ async def stream(request: Request, _: auth.Session = Depends(require_admin)):
 def _system_payload() -> dict[str, Any]:
     """Runtime + browser pool status. Shared by /system and the stream."""
     import platform
-    import server
+    server = _app_module()
 
     from common import concurrency
 
@@ -649,7 +663,7 @@ async def solves(
     only_failed: bool = Query(False, alias="failed", description="Only failed solves"),
     _: auth.Session = Depends(require_admin),
 ):
-    import server
+    server = _app_module()
 
     events = list(server._solve_log)
     if type_filter:
@@ -663,7 +677,7 @@ async def solves(
 @router.get("/api/v1/system", tags=["console"], summary="Runtime + browser pool status")
 async def system(_: auth.Session = Depends(require_admin)):
     import platform
-    import server
+    server = _app_module()
 
     from common import concurrency
 

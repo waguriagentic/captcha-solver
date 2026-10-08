@@ -29,6 +29,14 @@ const REPO_URL = import.meta.env.VITE_REPO_URL ?? "https://github.com/waguriagen
 /** Full-bleed shell: content spans the viewport with a gutter, no centred box. */
 const SHELL = "w-full px-6 sm:px-8 lg:px-14 xl:px-20";
 
+/**
+ * Shown only for the moment before the reference loads. Deliberately NOT a
+ * plausible hostname: a reader skimming the curl example must not mistake it
+ * for a real endpoint. The real value comes from the service, which derives it
+ * from SOLVER_API_HOST.
+ */
+const API_BASE_LOADING = "https://<api-host>";
+
 function Wordmark() {
   return (
     <Link to="/" className="flex items-center gap-2.5">
@@ -103,7 +111,7 @@ export function LandingPage() {
     return () => controller.abort();
   }, []);
 
-  const apiBase = meta?.api_base_url ?? "https://api.example.com";
+  const apiBase = meta?.api_base_url ?? API_BASE_LOADING;
   const types = meta?.types ?? [];
 
   const curl = [

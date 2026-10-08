@@ -176,6 +176,33 @@ def main() -> int:
         status, _, body = anon.json("GET", "/api/v1/meta")
         check("GET /api/v1/meta is public", status == 200, f"got {status}")
         check("meta advertises the API host", body and body.get("api_base_url", "").startswith("http"))
+        # The advertised origin must be the configured one, not a placeholder.
+        # Two separate variables used to feed the schema and the pages, so they
+        # could disagree and the schema kept a placeholder even when the pages
+        # were correct.
+        check("meta derives the origin from SOLVER_API_HOST",
+              body and body.get("api_base_url") == f"https://{API_HOST}",
+              f"got {body.get('api_base_url') if body else None}")
+
+        status, _, ref_body = anon.json("GET", "/api/v1/reference")
+        check("reference agrees with meta on the origin",
+              ref_body and ref_body.get("api_base_url") == f"https://{API_HOST}",
+              f"got {ref_body.get('api_base_url') if ref_body else None}")
+
+        status, _, schema = anon.json("GET", "/openapi.json")
+        check("openapi servers advertise the configured origin",
+              status == 200 and schema
+              and schema.get("servers", [{}])[0].get("url") == f"https://{API_HOST}",
+              f"got {schema.get('servers') if schema else None}")
+        check("openapi contact agrees and has no trailing slash",
+              schema and schema.get("info", {}).get("contact", {}).get("url") == f"https://{API_HOST}",
+              f"got {schema.get('info', {}).get('contact', {}).get('url') if schema else None}")
+        check("no example.com placeholder leaks into any advertised origin",
+              "example.com" not in json.dumps({
+                  "meta": body, "reference": ref_body,
+                  "servers": schema.get("servers") if schema else None,
+                  "contact": schema.get("info", {}).get("contact") if schema else None,
+              }))
         check("meta lists 11 types", body and len(body.get("types", [])) == 11,
               f"got {len(body.get('types', [])) if body else 'none'}")
         check("meta leaks no operational data",

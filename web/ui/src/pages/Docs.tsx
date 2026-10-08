@@ -19,6 +19,13 @@ const REPO_URL = import.meta.env.VITE_REPO_URL ?? "https://github.com/waguriagen
 /** Full-bleed shell, matching the landing page's grid. */
 const SHELL = "w-full px-6 sm:px-8 lg:px-14 xl:px-20";
 
+/**
+ * Shown only for the moment before the reference loads. Deliberately NOT a
+ * plausible hostname, so a reader skimming the curl example cannot mistake it
+ * for a real endpoint. The real value comes from the service.
+ */
+const API_BASE_LOADING = "https://<api-host>";
+
 const AUTH_TONE = { public: "ok", bearer: "warn", session: "idle" } as const;
 
 function CopyButton({ value, label = "Copy" }: { value: string; label?: string }) {
@@ -164,7 +171,7 @@ export function DocsPage() {
     return () => controller.abort();
   }, []);
 
-  const apiBase = ref?.api_base_url ?? "https://api.example.com";
+  const apiBase = ref?.api_base_url ?? API_BASE_LOADING;
   const types = useMemo(
     () =>
       (ref?.types ?? []).filter(

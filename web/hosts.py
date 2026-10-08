@@ -56,6 +56,41 @@ def _split(value: Optional[str]) -> list[str]:
     return [p.strip().lower() for p in (value or "").split(",") if p.strip()]
 
 
+#: Shown when no origin is configured. Clearly a placeholder, so it reads as
+#: "you have not configured this" rather than as a real host.
+PLACEHOLDER_API_URL = "https://api.example.com"
+
+
+def public_api_base() -> str:
+    """The API origin this deployment actually serves.
+
+    Single source of truth for every surface that advertises a URL — the
+    OpenAPI ``servers`` list, the landing page and the reference page. It lives
+    here, beside the host policy, because it derives from the same setting: an
+    isolated deployment has already told us its API hostname.
+
+    Resolution order:
+      1. SOLVER_API_PUBLIC_URL — explicit, wins always.
+      2. https://<SOLVER_API_HOST> — derived from the isolation config.
+      3. PLACEHOLDER_API_URL — nothing configured; callers may warn.
+
+    Read at call time, never cached at import: the env is the operator's, and a
+    module-level constant would freeze the placeholder into the first response.
+    """
+    explicit = os.getenv("SOLVER_API_PUBLIC_URL", "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+    host = os.getenv("SOLVER_API_HOST", "").strip()
+    if host:
+        return f"https://{host}".rstrip("/")
+    return PLACEHOLDER_API_URL
+
+
+def is_placeholder(url: str) -> bool:
+    """True when ``url`` is the unconfigured default, so callers can say so."""
+    return url.rstrip("/") == PLACEHOLDER_API_URL
+
+
 def _norm(host: str) -> tuple[str, str]:
     """Return (host:port, hostname) for a raw Host header value."""
     raw = (host or "").strip().lower()
