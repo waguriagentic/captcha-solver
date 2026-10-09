@@ -94,10 +94,18 @@ WORKDIR /app
 # dependency: one dropped connection mid-download fails the build. pip retries
 # the same index with --retries, but it will not try a different one, so a
 # second index turns a hard failure into a retry elsewhere.
+#
+# --resume-retries lets a retry continue a partial download instead of
+# restarting it: large wheels (opencv-python-headless ~61 MB) on a mirror that
+# stalls near the end otherwise never complete — each --retries attempt starts
+# from byte 0 and hits the same stall (observed: stall at 56.6/61.2 MB twice).
+# It needs pip >= 25.1, so upgrade pip first (the base image ships 25.0.1).
 ARG PYPI_INDEX_URL=""
 ARG PYPI_EXTRA_INDEX_URL=""
 COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir --retries 10 --timeout 60 \
+RUN pip install --no-cache-dir --upgrade pip \
+      ${PYPI_INDEX_URL:+--index-url $PYPI_INDEX_URL} \
+ && pip install --no-cache-dir --retries 10 --timeout 120 --resume-retries 10 \
       ${PYPI_INDEX_URL:+--index-url $PYPI_INDEX_URL} \
       ${PYPI_EXTRA_INDEX_URL:+--extra-index-url $PYPI_EXTRA_INDEX_URL} \
       fastapi uvicorn pydantic pillow \
