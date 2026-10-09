@@ -3,6 +3,12 @@
 Route-intercept → solve the Turnstile widget on a fake page served at the
 target origin, then verify the token from the same browser session (keeps the
 origin/cookies and stays inside the token's 300s single-use window).
+
+The stub uses the interactive widget (`size: 'normal'`) rendered EXPLICITLY via
+`turnstile.render()` in the api.js `onload` callback, and the token is captured
+by that callback into a hidden input. An invisible/implicit widget yields a
+token the target's anti-abuse backend rejects even though siteverify passes, so
+keep the interactive render shape.
 """
 import asyncio
 import json
@@ -35,26 +41,83 @@ def _error_codes(body: str) -> list:
     return data.get("error-codes") or data.get("details") or []
 
 
+def _js_string(value: str) -> str:
+    """Escape a value for safe single-quoted JS embedding."""
+    return str(value).replace("\\", "\\\\").replace("'", "\\'")
+
+
+def _stub_html(sitekey: str, action: str = None, cdata: str = None) -> str:
+    """Fill the stub template with the widget options."""
+    extra = ""
+    if action:
+        extra += f"\n    action: '{_js_string(action)}',"
+    if cdata:
+        extra += f"\n    cdata: '{_js_string(cdata)}',"
+    return (HTML_TEMPLATE
+            .replace("__SITEKEY__", _js_string(sitekey))
+            .replace("__EXTRA__", extra))
+
+
 # ── Route-intercept (fast, generic) ─────────────────────────────────
 
-async def _get_turnstile_response_route(page, max_attempts: int = 20) -> str:
-    """Retrieve token from route-intercepted page (Theyka pattern)."""
+async def _click_turnstile_boxes(page) -> int:
+    """Click every ~300px Turnstile box on the stub page.
+
+    The widget lives in a cross-origin iframe, so the clickable surface is the
+    empty 290–310px div the iframe fills. Prefer divs with zero margin/padding
+    (the exact widget shell), fall back to any empty 290–310px div.
+    """
+    boxes = await page.evaluate(
+        """() => {
+            const out = [];
+            const collect = (strict) => {
+                document.querySelectorAll('div').forEach(item => {
+                    try {
+                        const r = item.getBoundingClientRect();
+                        if (r.width > 290 && r.width <= 310 && !item.querySelector('*')) {
+                            if (strict) {
+                                const css = window.getComputedStyle(item);
+                                if (css.margin !== '0px' || css.padding !== '0px') return;
+                            }
+                            out.push({x: r.x, y: r.y, w: r.width, h: r.height});
+                        }
+                    } catch (e) {}
+                });
+            };
+            collect(true);
+            if (!out.length) collect(false);
+            return out;
+        }"""
+    )
+    for b in boxes:
+        try:
+            await page.mouse.click(b["x"] + 30, b["y"] + b["h"] / 2)
+        except Exception:
+            pass
+    return len(boxes)
+
+
+async def _get_turnstile_response_route(page, max_attempts: int = 40) -> str:
+    """Retrieve the token from the route-intercepted stub page.
+
+    The callback-captured hidden input is `[name=cf-response]`; the widget's own
+    textarea (`[name=cf-turnstile-response]`) is checked as a fallback. Click
+    loop keeps poking the widget until a token lands.
+    """
     for _ in range(max_attempts):
         try:
-            val = await page.input_value("[name=cf-turnstile-response]")
-            if val == "":
-                try:
-                    await page.click("//div[@class='cf-turnstile']", timeout=3000)
-                except Exception:
-                    pass
-                await asyncio.sleep(1)
-            else:
-                el = await page.query_selector("[name=cf-turnstile-response]")
-                if el:
-                    return await el.get_attribute("value")
-                break
+            tok = await page.evaluate(
+                "() => { const a = document.querySelector('[name=cf-response]');"
+                " if (a && a.value && a.value.length > 10) return a.value;"
+                " const b = document.querySelector('[name=cf-turnstile-response]');"
+                " return (b && b.value) || ''; }"
+            )
+            if tok:
+                return tok
+            await _click_turnstile_boxes(page)
         except Exception:
-            await asyncio.sleep(1)
+            pass
+        await asyncio.sleep(1)
     raise TimeoutError("Token not received via route-intercept")
 
 
@@ -64,17 +127,16 @@ async def solve_turnstile(sitekey: str, url: str, action: str = None,
     t0 = time.monotonic()
     async with solve_slot():
         target = url
-        div = (f'<div class="cf-turnstile" data-sitekey="{sitekey}"'
-               + (f' data-action="{action}"' if action else '')
-               + (f' data-cdata="{cdata}"' if cdata else '')
-               + '></div>')
-        page_data = HTML_TEMPLATE.replace("<!-- cf turnstile -->", div)
+        page_data = _stub_html(sitekey, action, cdata)
 
         async with await cloakbrowser.launch_async(**_browser_kwargs(proxy)) as browser:
             page = await browser.new_page()
             try:
                 await page.route(route_glob(target), lambda r: r.fulfill(body=page_data,
                                                              status=200))
+                # CF posts solved-challenge telemetry to this endpoint; aborting it
+                # keeps the session from reporting back on the stub origin.
+                await page.route("**/reports/v0/post**", lambda r: r.abort())
                 await page.goto(target, wait_until="domcontentloaded")
                 token = await _get_turnstile_response_route(page)
                 return {"token": token, "expires_in": 300,
@@ -94,17 +156,14 @@ async def solve_and_verify(sitekey: str, verify_url: str,
     t0 = time.monotonic()
     async with solve_slot():
         target = page_url or verify_url
-        div = (f'<div class="cf-turnstile" data-sitekey="{sitekey}"'
-               + (f' data-action="{action}"' if action else '')
-               + (f' data-cdata="{cdata}"' if cdata else '')
-               + '></div>')
-        page_data = HTML_TEMPLATE.replace("<!-- cf turnstile -->", div)
+        page_data = _stub_html(sitekey, action, cdata)
 
         async with await cloakbrowser.launch_async(**_browser_kwargs(proxy)) as browser:
             page = await browser.new_page()
             try:
                 await page.route(route_glob(target), lambda r: r.fulfill(
                     body=page_data, status=200))
+                await page.route("**/reports/v0/post**", lambda r: r.abort())
                 await page.goto(target, wait_until="domcontentloaded",
                                 timeout=30000)
                 token = await _get_turnstile_response_route(page)

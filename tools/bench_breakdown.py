@@ -35,8 +35,9 @@ async def main():
     print("--- solve phase breakdown ---")
     browser = await timed("launch", cloakbrowser.launch_async(**browser_kwargs("TURNSTILE")))
     page = await timed("new_page", browser.new_page())
-    div = f'<div class="cf-turnstile" data-sitekey="{SITEKEY}"></div>'
-    page_data = TEMPLATE.replace("<!-- cf turnstile -->", div)
+    page_data = (TEMPLATE
+                 .replace("__SITEKEY__", SITEKEY)
+                 .replace("__EXTRA__", ""))
     await page.route(route_glob(URL), lambda r: r.fulfill(body=page_data, status=200))
     await timed("goto", page.goto(URL, wait_until="domcontentloaded"))
 
@@ -45,7 +46,8 @@ async def main():
         for _ in range(600):
             tok = await page.evaluate(
                 "() => { const el = document.querySelector("
-                "'input[name=cf-turnstile-response],textarea[name=cf-turnstile-response]');"
+                "'[name=cf-response],input[name=cf-turnstile-response],"
+                "textarea[name=cf-turnstile-response]');"
                 " return el ? el.value : ''; }")
             if tok:
                 return tok

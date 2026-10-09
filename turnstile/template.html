@@ -1,16 +1,26 @@
 <!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Turnstile Solver</title>
+<html lang="en"><head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Turnstile</title>
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: #1a1a1a; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+html,body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f5f5f5;font-family:system-ui,sans-serif}
+.turnstile{min-width:300px;min-height:65px}
 </style>
-</head>
-<body>
-<!-- cf turnstile -->
-<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
-</body>
-</html>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onloadTurnstileCallback" defer></script>
+<script>
+window.onloadTurnstileCallback = function () {
+  turnstile.render('.turnstile', {
+    sitekey: '__SITEKEY__',
+    size: 'normal',__EXTRA__
+    callback: function (token) {
+      var c = document.createElement('input');
+      c.type = 'hidden';
+      c.name = 'cf-response';
+      c.value = token;
+      document.body.appendChild(c);
+    }
+  });
+};
+</script>
+</head><body><div class="turnstile"></div></body></html>
