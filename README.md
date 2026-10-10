@@ -218,7 +218,7 @@ when you deliberately need to hit an internal target.
   "type": "turnstile",          // turnstile | recaptcha | hcaptcha | cloudflare | awswaf | botguard | datadome | perimeterx | akamai | aliyun  (required)
   "sitekey": "0x4AAA...",        // site key (widget types only — cloudflare/awswaf/botguard/
                                  //   datadome/perimeterx/akamai/aliyun are page-level and need NO sitekey)
-  "url": "https://target.com",   // page the captcha is on            (required; NOT needed for aliyun)
+  "url": "https://target.com",   // page the captcha is on (required; aliyun: only for real_page mode)
 
   // optional, all types
   "action": "submit",            // turnstile/reCAPTCHA action
@@ -257,10 +257,13 @@ when you deliberately need to hit an internal target.
   // perimeterx only
   "render_flow": "outlook_signup",    // named trigger that makes the gate render
 
-  // aliyun only (no sitekey, no url)
+  // aliyun only (no sitekey)
   "scene_id": "1r7eif79x",            // target site's captcha SceneId          (required)
   "prefix": "13lbkb5",                // captcha-open endpoint prefix           (required)
   "region": "sgp",                    // sgp (default) | cn | intl
+  // aliyun real_page mode (required for session-bound targets): set
+  // "real_page": true + "url", then pre_actions to reach the widget and
+  // post_fetch to submit from the same browser session — see aliyun/README.md
 
   // arkose only
   "public_key": "A0DE7B75-...",       // Arkose site public key                 (required)
@@ -764,8 +767,12 @@ captcha-solver/
 │   └── README.md
 ├── akamai/                # Bot Manager _abck clearance
 │   └── solve.py
-├── aliyun/                # Captcha 2.0 slide-puzzle
-│   └── solve.py
+├── aliyun/                # Captcha 2.0 slider (stub + real_page)
+│   ├── solve.py           #   stub flow: render widget, gap detect, quadratic drag
+│   ├── realpage.py        #   real_page flow: drive the target's own widget, then
+│   │                      #   submit from the same session (session-bound targets)
+│   ├── _run.py            #   subprocess runner (drag timing needs main thread)
+│   └── _run_realpage.py   #   subprocess runner for real_page
 └── arkose/                # FunCaptcha visual puzzle (ONNX classification)
     ├── solve.py           #   CloakBrowser → gfct intercept → predict → encrypt → /fc/ca/
     ├── predict.py         #   ONNX predictor (4 threads, ~0.1s inference)
