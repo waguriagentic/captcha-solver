@@ -11,7 +11,8 @@
 <script src="https://o.alicdn.com/captcha-frontend/aliyunCaptcha/AliyunCaptcha.js"></script>
 <script>
 window.__ready = false;
-window.__verify = null;
+window.__R = null;       // SDK 3.x self-verify: R = btoa({certifyId, sceneId, isSign, securityToken})
+window.__verify = null;  // legacy callback payload (only when captchaVerifyCallback is set)
 function boot() {
   if (typeof initAliyunCaptcha !== 'function') { setTimeout(boot, 200); return; }
   initAliyunCaptcha({
@@ -23,10 +24,12 @@ function boot() {
     element: '#cap',
     button: '#btn',
     getInstance: function (i) { window.__inst = i; window.__ready = true; },
-    captchaVerifyCallback: function (p) {
-      window.__verify = p;
-      return { captchaResult: true, bizResult: true };
-    },
+    // Self-verify mode (what real sites like chat.z.ai use): the widget runs its
+    // own VerifyCaptchaV3, receives a securityToken, and hands back
+    // R = btoa({certifyId, sceneId, isSign:true, securityToken}). No page-side
+    // verify call is made, so the one-time certifyId is never burned.
+    success: function (R) { window.__R = R; },
+    fail: function () { window.__R = null; },
   });
 }
 boot();

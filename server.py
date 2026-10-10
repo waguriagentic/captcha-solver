@@ -183,6 +183,9 @@ class PreAction(BaseModel):
     value: Optional[str] = Field(
         None, description="Value for fill/select/press, or seconds for wait")
     timeout: Optional[int] = Field(10000, description="Element wait timeout (ms)")
+    optional: Optional[bool] = Field(
+        False, description="Swallow a missing/failed element instead of failing the solve "
+        "(multi-variant pages: signin vs signup tabs).")
 
 
 class PostFetch(BaseModel):
@@ -538,6 +541,55 @@ async def _dispatch(req: SolveRequest) -> dict:
         return {"type": "akamai", **r}
 
     if req.type == "aliyun":
+        if req.real_page:
+            # Session-bound flow: solve on the REAL target page and run
+            # post_fetch from the same browser session. The widget's own verify
+            # produces a securityToken, the page builds
+            # R = btoa({certifyId, sceneId, isSign, securityToken}), and the
+            # target backend only accepts R from the SAME session (verified
+            # live: same R accepted in-browser, rejected from a plain client).
+            #
+            # Dispatched to a SUBPROCESS for the same reason as the stub path
+            # below: drag-trajectory timing is fidelity-sensitive to running on
+            # the main thread with a clean event loop. Direct main-thread call
+            # succeeded; awaited on uvicorn's loop burned 10 attempts with no R.
+            if not req.url:
+                raise HTTPException(400, "url is required for aliyun real_page mode")
+            import os as _os
+            import tempfile as _tf
+            actions, fetches = _extract(req)
+            spec = {"url": req.url, "scene_id": req.scene_id,
+                    "prefix": req.prefix, "timeout_s": req.timeout_s or 240,
+                    "pre_actions": actions, "post_fetch": fetches,
+                    "proxy": req.proxy}
+            with _tf.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+                json.dump(spec, f)
+                spec_path = f.name
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    sys.executable, "-m", "aliyun._run_realpage", spec_path,
+                    cwd=_os.path.dirname(_os.path.abspath(__file__)),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE)
+                _to = req.timeout_s or 240
+                try:
+                    out, err = await asyncio.wait_for(
+                        proc.communicate(), timeout=_to + 60)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    return {"type": "aliyun", "solved": False,
+                            "error": "subprocess deadline"}
+            finally:
+                try:
+                    _os.unlink(spec_path)
+                except OSError:
+                    pass
+            r = {"solved": False, "error": "no result from runner"}
+            for line in (out or b"").decode(errors="replace").splitlines():
+                if line.startswith("__ALIYUN_RESULT__"):
+                    r = json.loads(line[len("__ALIYUN_RESULT__"):])
+                    break
+            return {"type": "aliyun", **r}
         # Dispatch to a SUBPROCESS (aliyun._run), not an inline await. The drag trajectory
         # depends on precise CDP Input.dispatchMouseEvent timing that is fidelity-sensitive
         # to running on the MAIN thread with a clean event loop. Proven empirically:

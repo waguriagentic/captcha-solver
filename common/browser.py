@@ -53,29 +53,39 @@ async def run_pre_actions(page, actions: list):
     """Execute a list of pre-actions before solving.
 
     Each action: {"type": "click|fill|select|press|wait", "selector": "...",
-                  "value": "...", "timeout": N}
+                  "value": "...", "timeout": N, "optional": bool}
+    optional=true swallows a missing/failed element so multi-variant pages
+    (signin vs signup tabs) do not fail the whole solve.
     """
     for i, action in enumerate(actions):
         atype = action.get("type", "")
         selector = action.get("selector", "")
         value = action.get("value", "")
         timeout = action.get("timeout", 10000)
-        log.info("Pre-action %d: %s %s", i + 1, atype, (selector or "")[:60])
-        if atype == "click":
-            loc = await resolve_selector(page, selector, timeout)
-            await loc.click(timeout=timeout)
-        elif atype == "fill":
-            loc = await resolve_selector(page, selector, timeout)
-            await loc.fill(value, timeout=timeout)
-        elif atype == "select":
-            loc = await resolve_selector(page, selector, timeout)
-            await loc.select_option(value, timeout=timeout)
-        elif atype == "press":
-            await page.keyboard.press(value)
-        elif atype == "wait":
-            await asyncio.sleep(float(value or 1))
-        else:
-            log.warning("Unknown pre-action type: %s", atype)
+        optional = bool(action.get("optional"))
+        log.info("Pre-action %d: %s %s%s", i + 1, atype, (selector or "")[:60],
+                 " (optional)" if optional else "")
+        try:
+            if atype == "click":
+                loc = await resolve_selector(page, selector, timeout)
+                await loc.click(timeout=timeout)
+            elif atype == "fill":
+                loc = await resolve_selector(page, selector, timeout)
+                await loc.fill(value, timeout=timeout)
+            elif atype == "select":
+                loc = await resolve_selector(page, selector, timeout)
+                await loc.select_option(value, timeout=timeout)
+            elif atype == "press":
+                await page.keyboard.press(value)
+            elif atype == "wait":
+                await asyncio.sleep(float(value or 1))
+            else:
+                log.warning("Unknown pre-action type: %s", atype)
+        except Exception as e:
+            if optional:
+                log.info("Pre-action %d skipped (optional): %s", i + 1, e)
+            else:
+                raise
         await asyncio.sleep(0.5)
 
 

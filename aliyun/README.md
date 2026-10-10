@@ -1,10 +1,24 @@
-# aliyun — Aliyun Captcha 2.0 slide-puzzle solver
+# aliyun — Aliyun Captcha 2.0 solver (stub + real-page)
 
-Harvest-only solver for Aliyun Captcha 2.0 (the slide-puzzle used by Qoder et al).
-No third party at solve time (no CapMonster). Renders the widget on a minimal
-self-hosted page, detects the gap, drags the slider along the empirically-fitted
-**quadratic** handle→piece curve, and harvests the SDK-built token from
-`captchaVerifyCallback`.
+Solver for Aliyun Captcha 2.0 (the slider/INPAINTING challenge used by chat.z.ai
+et al). No third party at solve time. Two modes:
+
+| Mode | Request | How it works |
+|---|---|---|
+| **stub** (default) | `scene_id` + `prefix` | Renders the widget on a minimal self-hosted page, detects the gap, drags the slider along the empirically-fitted **quadratic** handle→piece curve, harvests the token from the widget's own success callback. |
+| **real_page** | `real_page: true` + `url` | Navigates the REAL target page, drives its own widget, harvests the token, then fires the caller's submit call (`post_fetch`) from inside that same page. Required for session-bound targets. |
+
+## Which mode do I need?
+
+Aliyun's newer INPAINTING flow is **session-bound**: the `certifyId` is validated
+against the browser session that produced it (cookies + UA + IP + TLS). Verified
+live: the same token accepted from the browser that solved it, rejected when
+replayed from a plain HTTP client.
+
+- Target accepts the token submitted from **your own** client → **stub** mode
+  (fast, no target navigation).
+- Target validates the token server-side against the solving session → **real_page**
+  mode. This is the common case for modern sites (chat.z.ai, etc.).
 
 ## Gap detection — YOLOv8n (with cv2 fallback)
 
@@ -29,43 +43,78 @@ ease-out, **overshoot the target by ~6-11px**, then a multi-step correction back
 true target. This is the human tell that passes. Do **not** over-jitter — a heavier
 profile with random pauses + big jitter ("over2") regressed to 2/3. Clean overshoot wins.
 
-End-to-end (`solve_aliyun`, YOLO detect + overshoot drag): **3/3 T001**.
+## The two callback shapes (why the old flow failed)
 
-Benchmark vs 6 held-out ground-truth samples:
+The widget hands the page one of two things depending on how it was initialised:
 
-| detector        | mean err | within 8px | speed (warm) | cores |
-| --------------- | -------- | ---------- | ------------ | ----- |
-| cv2 Sobel       | ~26px    | 2/6        | ~10ms        | 1     |
-| **YOLOv8n ONNX**| **1.8px**| **6/6**    | **~20ms**    | **2** |
+- **`captchaVerifyCallback(payload)`** (legacy) — `{sceneId, certifyId, deviceToken, …}`.
+  The page must call `VerifyCaptchaV3` itself to obtain a VerifyCode. That call is
+  **one-time-use** — it consumes the certifyId.
+- **`success(R)`** (self-verify, what current sites use) — the widget runs its own
+  verify, receives a `securityToken`, and hands back
+  `R = base64({certifyId, sceneId, isSign:true, securityToken})`. This is the exact
+  string targets expect as `captcha_verify_param`. Calling verify again would burn
+  the certifyId.
 
-**How the model was made** (reproducible): collect ~400 live challenge image-pairs
-(no solving), label each gap via 2Captcha `CoordinatesTask` as a one-time offline
-oracle (~$0.50 total), train YOLOv8n on Camber GPU (~2.5 min, mAP50 0.95), export
-ONNX. The paid solver is the *teacher* used once for labels — never called at solve
-time. Training assets live in `qoder-register/re/` (collect_dataset / label_2captcha /
-build_dataset / run_camber).
+The solver handles both: it harvests `success(R)` when the widget self-verifies and
+only falls back to the legacy verify path otherwise.
+
+## Latency note
+
+Each attempt costs ~20-25s (drag + widget verify + challenge refresh). The real-page
+mode typically succeeds in 1-3 attempts. Aliyun's page-side `timeout` option is the
+widget's internal timer, not a deadline for the solve — allow `timeout_s` 240-300.
 
 ## Dependencies
 
 `onnxruntime` (CPU) + `opencv-python-headless` + `numpy`. The YOLO path degrades to
 cv2 gracefully if `onnxruntime` or `best.onnx` is missing.
 
-## Request
+## Request — stub mode
 
 ```json
 POST /solve
 {
   "type": "aliyun",
-  "scene_id": "1r7eif79x",   // required — target site's captcha SceneId
-  "prefix": "13lbkb5",       // required — captcha-open endpoint prefix
-  "region": "sgp",           // optional — sgp (default) | cn | intl
+  "scene_id": "36qgs6xb",     // required — target site's captcha SceneId
+  "prefix": "no8xfe",         // required — captcha-open endpoint prefix
+  "region": "sgp",            // optional — sgp (default) | cn | intl
   "proxy": "http://user:pass@host:port",  // optional
-  "timeout_s": 90            // optional
+  "timeout_s": 90             // optional
 }
 ```
 
-No `sitekey` and no `url` — Aliyun's challenge identity is `scene_id` + `prefix`, and
-the solver hosts its own minimal page (CapMonster-style; never visits the target site).
+## Request — real_page mode (session-bound targets)
+
+```json
+POST /solve
+{
+  "type": "aliyun",
+  "real_page": true,
+  "url": "https://chat.z.ai/auth",
+  "scene_id": "36qgs6xb",
+  "prefix": "no8xfe",
+  "timeout_s": 300,
+  "pre_actions": [
+    {"type": "click", "selector": "text=Continue with Email"},
+    {"type": "wait", "value": "2.5"},
+    {"type": "click", "selector": "text=Sign up"},
+    {"type": "fill", "selector": "input[type=email]", "value": "user@example.com"},
+    {"type": "fill", "selector": "input[type=password]", "value": "…"}
+  ],
+  "post_fetch": [
+    {"url": "https://chat.z.ai/api/v1/auths/signup", "method": "POST",
+     "body": {"email": "user@example.com", "password": "…",
+              "captcha_verify_param": "__TOKEN__"}}
+  ]
+}
+```
+
+- `pre_actions` run before the widget appears (click/fill/wait/select/press;
+  add `"optional": true` to tolerate a missing element on multi-variant pages).
+- `post_fetch` calls fire **from inside the solving browser**; `__TOKEN__` is
+  replaced by the harvested token. Results come back under `post_fetch` with
+  `{status, body}`.
 
 ## Response
 
@@ -73,45 +122,35 @@ the solver hosts its own minimal page (CapMonster-style; never visits the target
 {
   "type": "aliyun",
   "solved": true,
-  "token": {
-    "sceneId": "1r7eif79x",
-    "certifyId": "nVk57gcoC0",
-    "deviceToken": "SG_WEB#...",
-    "data": "JRMnbQ9RGiMx..."
-  },
+  "token": "eyJjZX…",            // the token (R string)
   "verify_code": "T001",
-  "method": "quadratic-slide",
-  "attempts": 6,
-  "elapsed": 8.4
+  "method": "real-page",
+  "attempts": 2,
+  "elapsed": 48.6,
+  "post_fetch": [{"url": "https://chat.z.ai/api/v1/auths/signup",
+                   "status": 200, "body": "{\"success\":true}"}]
 }
 ```
 
-The caller replays `token` **immediately** into `VerifyCaptchaV3` (server returns T001).
-The token is **session-bound + one-time-use**; `deviceToken` is time-bound. If a proxy
-was used to solve, run the verify from the same IP.
+## Failure modes
+
+- `captcha_type: "TRACELESS"` + `solved: false` — the scene served a silent
+  challenge. This happens when the scene id does not match the page context and is
+  **always rejected** by targets; the solver fails hard instead of pretending to
+  succeed. Check the scene id.
+- `solved: false, error: "no R in N attempts"` — the drag never got accepted;
+  inspect the attempt logs (gap detection failures show as `challenge images missing`).
 
 ## How it works (RE notes)
 
-1. **Popup render** — the widget only pops from a clean page; the target's heavy SPA
-   suppresses it. We mount the SDK on our own minimal page with the site's sceneId.
-2. **Gap detection** — `gap_cv.py`: cv2 Sobel-x gradient template match (piece
-   silhouette edges vs back-image edges). Pure CPU, ~5-20ms, no LLM, no server load.
+1. **Widget render** — stub mode mounts the SDK on our own minimal page with the
+   site's sceneId; real-page mode drives the target's own widget.
+2. **Gap detection** — `gap_cv.py`: YOLOv8n ONNX when present, else cv2 Sobel-x
+   gradient template match. Pure CPU, ~5-20ms.
 3. **Quadratic drag (the anti-bot trick)** — handle→piece is NOT linear:
-   `piece_rel = 0.00355·hx² + 0.0769·hx` (residual ≈0). Naive linear solvers always
-   miss (F015). We invert the quadratic to get the exact drag distance.
-4. **Server verdicts** — F002 = no slide, F015 = wrong position, F001 = close, T001 =
-   pass. Used as ground truth; the solver retries (challenge refresh is free) until T001.
-
-## Status / known limitation
-
-Fundamentally works — reaches **T001** (server-verified). The limiter is gap-detection
-reliability: ~50% single-shot on high-contrast backgrounds, lower on busy ones, so the
-solver leans on internal retry. On a bad streak it can exhaust `max_attempts` without a
-T001 (returns `solved:false, last_verify_code`). To make it production-tight, improve
-`gap_cv.detect_gap_x` (the drag math is already correct):
-
-- multi-scale / notch-shape template match, or a tiny trained gap detector
-- the error is content-dependent (not a fixed bias), so a constant offset won't fix it
-
-Vision-LLM localization was tested and **does not work** for this (0/6) — LLMs are good
-at discrete tile classification, not pixel-precise gap localization. Keep it CV-based.
+   `piece_rel = 0.00355·hx² + 0.0769·hx` (residual ≈0; verified identical on
+   chat.z.ai by live measurement). Naive linear solvers always miss (F015).
+4. **Token harvest** — the widget's own success callback (`success(R)`); never
+   call verify again for self-verify widgets (one-time-use certifyId).
+5. **Submit** — stub mode returns the token; real-page mode fires `post_fetch`
+   from the same browser session (session-bound targets).
