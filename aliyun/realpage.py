@@ -212,6 +212,17 @@ async def solve_aliyun_realpage(url: str, scene_id: Optional[str] = None,
             if ready.get("rs") in ("interactive", "complete") and ready.get("hasBody"):
                 break
             await page.wait_for_timeout(500)
+        # The SPA shell can take a while to mount (heavy third-party scripts).
+        # Wait for actual content — a button or non-trivial body text — before
+        # running pre_actions, otherwise the first selector misses and the
+        # whole solve aborts on a page that would have rendered seconds later.
+        for _ in range(60):
+            has_content = await page.evaluate(
+                "()=>(document.querySelectorAll('button,a[role=button],input')"
+                ".length > 0) || document.body.innerText.trim().length > 40")
+            if has_content:
+                break
+            await page.wait_for_timeout(500)
         await page.wait_for_timeout(1500)
 
         if pre_actions:
