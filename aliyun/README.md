@@ -15,10 +15,23 @@ against the browser session that produced it (cookies + UA + IP + TLS). Verified
 live: the same token accepted from the browser that solved it, rejected when
 replayed from a plain HTTP client.
 
+Origin + cookies are NOT sufficient either — serving the stub at the target's
+own origin after a real visit still gets rejected:
+
+| Setup | Solve | Redeem |
+|---|---|---|
+| Stub at a neutral origin | ✓ | ✗ |
+| Stub at target origin + real cookies, same-page submit | ✓ | ✗ |
+| Real page, widget driven in place, same-page submit | ✓ | ✓ |
+
+The binding goes deeper than origin/cookies (widget-boot device telemetry is
+the leading hypothesis). So:
+
 - Target accepts the token submitted from **your own** client → **stub** mode
   (fast, no target navigation).
 - Target validates the token server-side against the solving session → **real_page**
-  mode. This is the common case for modern sites (chat.z.ai, etc.).
+  mode. This is the common case for modern sites (chat.z.ai, etc.) and the only
+  mode that works there.
 
 ## Gap detection — YOLOv8n (with cv2 fallback)
 
