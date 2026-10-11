@@ -146,13 +146,21 @@ async def _verify_in_page(page, tok, scene_id: str, prefix: str) -> str:
 async def solve_aliyun(scene_id: str, prefix: str, region: str = "sgp",
                        proxy: str = None, timeout_s: int = 90,
                        max_attempts: int = 12, referer: str = None,
-                       page_url: str = None) -> dict:
+                       page_url: str = None, post_fetch: list = None) -> dict:
     """Solve Aliyun Captcha 2.0 on a self-hosted stub page (harvest-only).
 
     scene_id + prefix identify the target site's captcha scene. referer /
     page_url are OPTIONAL context the scene may use when scoring: pass the
     target page's origin so the challenge is served in the right context
     (defaults to none — no spoofed referer, stub served at a neutral origin).
+
+    post_fetch (optional) — API calls fired AFTER solving, from the server
+    process (no browser session needed; the token is portable — verified live
+    2026-10-11: a stub-solved R was accepted by chat.z.ai from a plain HTTP
+    client carrying the site's own header, x-region: overseas). Each entry:
+      {"url": ..., "method": "POST", "body": {...}, "headers": {...}}
+    with `__TOKEN__` in the body replaced by the solved token.
+
     Sites whose scene requires same-origin context should use the real-page
     solver instead (aliyun.realpage.solve_aliyun_realpage).
     """
@@ -373,9 +381,11 @@ async def solve_aliyun(scene_id: str, prefix: str, region: str = "sgp",
                 # SDK 3.x self-verify: the widget ran its own verify and handed
                 # back R = btoa({certifyId, sceneId, isSign, securityToken}).
                 # This is the token format current sites expect as
-                # captcha_verify_param. NOTE: R is bound to the browser session
-                # that produced it — session-bound targets only accept it when
-                # submitted from the same browser (use realpage mode).
+                # captcha_verify_param. R is portable: the accepting endpoint
+                # (chat.z.ai) only requires the target's own request header
+                # (x-region: overseas) at redeem time — verified live 2026-10-11:
+                # stub R + header from a plain HTTP client -> 200; same R without
+                # the header -> 400. Use post_fetch headers for such sites.
                 log.info("aliyun attempt %d [%s]: method=%s gap_x=%s dist=%.1f -> R (self-verify)",
                          attempt, type_name, g.get("method", "cv2"), g["gap_x"], dist)
                 return {"token": val, "verify_code": "T001", "self_verify": True,
@@ -517,12 +527,19 @@ async def solve_aliyun(scene_id: str, prefix: str, region: str = "sgp",
                 continue
             last_code = res["verify_code"]
             if res["verify_code"] == "T001":
-                return {
+                out = {
                     "solved": True, "token": res["token"],
                     "verify_code": res["verify_code"], "method": res["method"],
                     "captcha_type": type_name, "attempts": attempt + 1,
                     "elapsed": round(time.monotonic() - t_start, 1),
                 }
+                if post_fetch and res.get("token"):
+                    # Token is portable: run the caller's redeem calls from the
+                    # server process (no browser session needed).
+                    from common.browser import run_post_fetch_http
+                    out["post_fetch"] = await run_post_fetch_http(
+                        post_fetch, res["token"])
+                return out
 
         return {"solved": False, "error": f"no T001 in {max_attempts} attempts",
                 "last_verify_code": last_code, "captcha_type": type_name,

@@ -12,12 +12,13 @@ import re
 
 log = logging.getLogger(__name__)
 
-# Parameterized fetch: caller values (url, method, body) arrive as evaluate() args,
-# NEVER interpolated into JS source — safe against quotes/injection.
+# Parameterized fetch: caller values (url, method, body, headers) arrive as evaluate()
+# args, NEVER interpolated into JS source — safe against quotes/injection.
 _FETCH_JS = (
-    "async ({u, m, b}) => { try {"
+    "async ({u, m, b, h}) => { try {"
+    " const headers = {'Content-Type': 'application/json', ...(h || {})};"
     " const r = await fetch(u, {method: m,"
-    " headers: {'Content-Type': 'application/json'},"
+    " headers,"
     " body: b, credentials: 'include'});"
     " return {status: r.status, body: await r.text()};"
     " } catch(e) { return {status: 0, body: String(e)}; } }"
@@ -138,28 +139,81 @@ def route_glob(url: str) -> str:
     return url                            # has a path → exact match already works
 
 
-async def fetch_from_page(page, url: str, method: str, body: str) -> dict:
+async def fetch_from_page(page, url: str, method: str, body: str,
+                          headers: dict | None = None) -> dict:
     """One parameterized fetch from the page's session. Returns {status, body}."""
-    return await page.evaluate(_FETCH_JS, {"u": url, "m": method.upper(), "b": body})
+    return await page.evaluate(_FETCH_JS, {"u": url, "m": method.upper(), "b": body,
+                                           "h": headers or {}})
 
 
 async def run_post_fetch(page, post_fetch: list, token: str) -> list:
     """Run post_fetch API calls from the SAME browser session (keeps cookies/origin).
 
-    Each entry: {"url": ..., "method": "POST", "body": {...}}. `__TOKEN__` in the
-    JSON body is replaced with the solved token. All values are passed as evaluate()
-    args (never interpolated into JS source).
+    Each entry: {"url": ..., "method": "POST", "body": {...}, "headers": {...}}.
+    `__TOKEN__` in the JSON body is replaced with the solved token. All values are
+    passed as evaluate() args (never interpolated into JS source).
     """
     results = []
     for pf in post_fetch:
         pf_url = pf["url"]
         pf_method = pf.get("method", "POST")
+        pf_headers = pf.get("headers")
         body_str = json.dumps(pf.get("body", {})).replace("__TOKEN__", token)
         try:
-            fr = await fetch_from_page(page, pf_url, pf_method, body_str)
+            fr = await fetch_from_page(page, pf_url, pf_method, body_str,
+                                       headers=pf_headers)
             log.info("post_fetch %s: %d", pf_url, fr["status"])
             results.append({"url": pf_url, **fr})
         except Exception as e:
             log.warning("post_fetch %s failed: %s", pf_url, e)
             results.append({"url": pf_url, "status": 0, "body": str(e)})
+    return results
+
+
+async def run_post_fetch_http(post_fetch: list, token: str) -> list:
+    """Run post_fetch calls from the SERVER process (no browser, no cookies).
+
+    For PORTABLE tokens: some sites' tokens do not depend on the solving browser
+    session, so the redeem call only needs the right request shape (headers).
+    Verified live: an Aliyun R solved in one browser was accepted by chat.z.ai
+    from a plain HTTP client carrying `x-region: overseas` — no cookies needed.
+    Uses curl_cffi (chrome TLS) when available, else urllib.
+    """
+    import urllib.request
+    import urllib.error
+
+    def _one(pf):
+        pf_url = pf["url"]
+        pf_method = (pf.get("method") or "POST").upper()
+        pf_headers = pf.get("headers") or {}
+        body_str = json.dumps(pf.get("body", {})).replace("__TOKEN__", token)
+        try:
+            try:
+                from curl_cffi import requests as _creq
+                resp = _creq.post(pf_url, data=body_str.encode(),
+                                  headers={"Content-Type": "application/json",
+                                           **pf_headers},
+                                  impersonate="chrome", timeout=60)
+                return {"url": pf_url, "status": resp.status_code,
+                        "body": resp.text[:4000]}
+            except ImportError:
+                req = urllib.request.Request(
+                    pf_url, data=body_str.encode(), method=pf_method)
+                req.add_header("Content-Type", "application/json")
+                for k, v in pf_headers.items():
+                    req.add_header(k, v)
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    return {"url": pf_url, "status": resp.status,
+                            "body": resp.read().decode(errors="replace")[:4000]}
+        except urllib.error.HTTPError as e:
+            return {"url": pf_url, "status": e.code,
+                    "body": e.read().decode(errors="replace")[:4000]}
+        except Exception as e:
+            return {"url": pf_url, "status": 0, "body": str(e)}
+
+    results = []
+    for pf in post_fetch:
+        fr = await asyncio.to_thread(_one, pf)
+        log.info("post_fetch(http) %s: %s", fr["url"], fr["status"])
+        results.append(fr)
     return results

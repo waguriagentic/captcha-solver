@@ -1,19 +1,27 @@
-"""Aliyun Captcha 2.0 — real-page solver (session-bound flow).
+"""Aliyun Captcha 2.0 — real-page solver.
 
-Why a separate module: Aliyun's INPAINTING flow is SESSION-BOUND end to end.
+Why a separate module: some Aliyun scenes only render inside their target page
+(SPA-driven widgets, scene context that a stub cannot reproduce). This solver
+navigates the REAL target page, drives its own widget (embed or popup),
+harvests the R value via a btoa hook, then fires the caller's submit call
+(post_fetch) from inside that same page.
+
 The widget's own verify (to `<prefix>-verify.captcha-open-<region>.aliyuncs.com`)
-returns a `securityToken`, the page builds
-`R = btoa({certifyId, sceneId, isSign:true, securityToken})`, and the target
-backend accepts R ONLY when it is submitted from the same browser session that
-solved the challenge (cookies + UA + IP + TLS).
+returns a `securityToken`; the page builds
+`R = btoa({certifyId, sceneId, isSign:true, securityToken})`.
+
+IMPORTANT (corrected 2026-10-11): R is NOT session-bound. An earlier
+"session-bound" conclusion came from a missing request header — chat.z.ai's
+own fetch wrapper adds `x-region: overseas` to same-origin calls, and every
+redeem without it returns 400 even from the same browser session. A
+stub-solved R + that header was accepted from a plain HTTP client (no
+browser, no cookies). Prefer stub mode + post_fetch headers when the scene
+renders on a stub; keep this module for scenes that only render in-page.
 
 Verified live against chat.z.ai (2026-10-11):
-  - R captured in-browser  -> signup from SAME page  -> 200 {"success":true}
-  - same R                 -> signup from Python      -> 400 captcha failed
-
-So the correct shape is: navigate the REAL target page, drive its own widget
-(embed or popup), harvest R via a btoa hook, then fire the caller's submit
-call (post_fetch) from inside that same page.
+  - stub R + `x-region: overseas` header, plain HTTP client  -> 200 accepted
+  - same R without the header                                -> 400 rejected
+  - real-page R, same-session submit                          -> 200 accepted
 
 Deep-reverse notes: see DEEP_REVERSE.md in this directory.
 """

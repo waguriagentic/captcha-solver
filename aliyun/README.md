@@ -5,33 +5,39 @@ et al). No third party at solve time. Two modes:
 
 | Mode | Request | How it works |
 |---|---|---|
-| **stub** (default) | `scene_id` + `prefix` | Renders the widget on a minimal self-hosted page, detects the gap, drags the slider along the empirically-fitted **quadratic** handle→piece curve, harvests the token from the widget's own success callback. |
-| **real_page** | `real_page: true` + `url` | Navigates the REAL target page, drives its own widget, harvests the token, then fires the caller's submit call (`post_fetch`) from inside that same page. Required for session-bound targets. |
+| **stub** (default) | `scene_id` + `prefix` | Renders the widget on a minimal self-hosted page, detects the gap, drags the slider along the empirically-fitted **quadratic** handle→piece curve, harvests the token from the widget's own success callback. Optional `post_fetch` runs the caller's redeem calls from the server process. |
+| **real_page** | `real_page: true` + `url` | Navigates the REAL target page, drives its own widget, harvests the token, then fires the caller's submit call (`post_fetch`) from inside that same page. Use for scenes that only render in-page. |
 
 ## Which mode do I need?
 
-Aliyun's newer INPAINTING flow is **session-bound**: the `certifyId` is validated
-against the browser session that produced it (cookies + UA + IP + TLS). Verified
-live: the same token accepted from the browser that solved it, rejected when
-replayed from a plain HTTP client.
+**Stub mode by default.** The token is portable: what a target validates is the
+request *shape* at redeem time, not the browser that solved the challenge.
 
-Origin + cookies are NOT sufficient either — serving the stub at the target's
-own origin after a real visit still gets rejected:
+Correction (2026-10-11): an earlier version of this file claimed the flow was
+"session-bound" and that real-page was required. That was wrong — the rejections
+came from a **missing request header**. chat.z.ai's own frontend patches
+`window.fetch` to add `x-region: overseas` to every same-origin call; without it
+every redeem returns 400 *even from the same browser session that solved it*.
+Measured matrix (live):
 
 | Setup | Solve | Redeem |
 |---|---|---|
-| Stub at a neutral origin | ✓ | ✗ |
-| Stub at target origin + real cookies, same-page submit | ✓ | ✗ |
-| Real page, widget driven in place, same-page submit | ✓ | ✓ |
+| Stub at a neutral origin, plain HTTP client, **with the site's header** | ✓ | **✓ 200** |
+| Stub at a neutral origin, plain HTTP client, without the header | ✓ | ✗ 400 |
+| Stub at target origin + real cookies, same-page submit, without the header | ✓ | ✗ 400 |
+| Real page, widget driven in place, same-page submit | ✓ | ✓ 200 |
 
-The binding goes deeper than origin/cookies (widget-boot device telemetry is
-the leading hypothesis). So:
+So the flow is provider-style:
 
-- Target accepts the token submitted from **your own** client → **stub** mode
-  (fast, no target navigation).
-- Target validates the token server-side against the solving session → **real_page**
-  mode. This is the common case for modern sites (chat.z.ai, etc.) and the only
-  mode that works there.
+1. Solve on a stub (fast, no target navigation, no cookies).
+2. Hand the token to the caller (or let `post_fetch` run it server-side).
+3. Redeem with the target's required request headers (`post_fetch[].headers`).
+
+If a target rejects a stub-solved token even with correct headers, check what
+its frontend's fetch/XHR wrappers add (open the site's bundle and grep for
+`window.fetch=` / `XMLHttpRequest`) — that header is the usual gate. Only when
+the widget itself cannot render on a stub (scene bound to in-page context) do
+you need `real_page: true`.
 
 ## Gap detection — YOLOv8n (with cv2 fallback)
 
@@ -74,14 +80,16 @@ only falls back to the legacy verify path otherwise.
 
 ## Latency note
 
-Each attempt costs ~20-25s (drag + widget verify + challenge refresh). The real-page
-mode typically succeeds in 1-3 attempts. Aliyun's page-side `timeout` option is the
-widget's internal timer, not a deadline for the solve — allow `timeout_s` 240-300.
+Each attempt costs ~20-25s (drag + widget verify + challenge refresh). Stub mode
+typically succeeds in 2-5 attempts (~30-80s); real-page mode in 1-3 attempts.
+Aliyun's page-side `timeout` option is the widget's internal timer, not a deadline
+for the solve — allow `timeout_s` 240-300.
 
 ## Dependencies
 
 `onnxruntime` (CPU) + `opencv-python-headless` + `numpy`. The YOLO path degrades to
-cv2 gracefully if `onnxruntime` or `best.onnx` is missing.
+cv2 gracefully if `onnxruntime` or `best.onnx` is missing. `curl_cffi` is optional
+(chrome-TLS HTTP for `post_fetch`; falls back to urllib).
 
 ## Request — stub mode
 
@@ -93,11 +101,20 @@ POST /solve
   "prefix": "no8xfe",         // required — captcha-open endpoint prefix
   "region": "sgp",            // optional — sgp (default) | cn | intl
   "proxy": "http://user:pass@host:port",  // optional
-  "timeout_s": 90             // optional
+  "timeout_s": 90,            // optional
+  "post_fetch": [
+    {"url": "https://target.example/api/redeem", "method": "POST",
+     "headers": {"x-region": "overseas"},
+     "body": {"captcha_verify_param": "__TOKEN__"}}
+  ]
 }
 ```
 
-## Request — real_page mode (session-bound targets)
+`post_fetch` in stub mode runs from the **server process** (plain HTTP, chrome TLS
+via curl_cffi) — no browser session needed. Use `headers` for whatever the target's
+own frontend adds to its API calls.
+
+## Request — real_page mode
 
 ```json
 POST /solve
@@ -117,6 +134,7 @@ POST /solve
   ],
   "post_fetch": [
     {"url": "https://chat.z.ai/api/v1/auths/signup", "method": "POST",
+     "headers": {"x-region": "overseas"},
      "body": {"email": "user@example.com", "password": "…",
               "captcha_verify_param": "__TOKEN__"}}
   ]
@@ -137,9 +155,9 @@ POST /solve
   "solved": true,
   "token": "eyJjZX…",            // the token (R string)
   "verify_code": "T001",
-  "method": "real-page",
+  "method": "quadratic-slide",
   "attempts": 2,
-  "elapsed": 48.6,
+  "elapsed": 28.8,
   "post_fetch": [{"url": "https://chat.z.ai/api/v1/auths/signup",
                    "status": 200, "body": "{\"success\":true}"}]
 }
@@ -153,6 +171,8 @@ POST /solve
   succeed. Check the scene id.
 - `solved: false, error: "no R in N attempts"` — the drag never got accepted;
   inspect the attempt logs (gap detection failures show as `challenge images missing`).
+- Token solved but redeem 400 — check the target's frontend request wrappers for
+  required headers (see "Which mode do I need?").
 
 ## How it works (RE notes)
 
@@ -165,5 +185,6 @@ POST /solve
    chat.z.ai by live measurement). Naive linear solvers always miss (F015).
 4. **Token harvest** — the widget's own success callback (`success(R)`); never
    call verify again for self-verify widgets (one-time-use certifyId).
-5. **Submit** — stub mode returns the token; real-page mode fires `post_fetch`
-   from the same browser session (session-bound targets).
+5. **Submit** — stub mode returns the token and can fire `post_fetch` server-side;
+   real-page mode fires `post_fetch` from the same browser session. Include the
+   target's required headers either way.

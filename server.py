@@ -196,6 +196,9 @@ class PostFetch(BaseModel):
     body: Optional[dict] = Field(
         None, description="JSON body. Use the literal __TOKEN__ anywhere to inject the "
         "solved token.", examples=[{"token": "__TOKEN__"}])
+    headers: Optional[dict] = Field(
+        None, description="Extra request headers (e.g. a site-specific region header the "
+        "target's own fetch wrapper adds).", examples=[{"x-region": "overseas"}])
 
 
 class SolveRequest(BaseModel):
@@ -542,12 +545,19 @@ async def _dispatch(req: SolveRequest) -> dict:
 
     if req.type == "aliyun":
         if req.real_page:
-            # Session-bound flow: solve on the REAL target page and run
-            # post_fetch from the same browser session. The widget's own verify
-            # produces a securityToken, the page builds
-            # R = btoa({certifyId, sceneId, isSign, securityToken}), and the
-            # target backend only accepts R from the SAME session (verified
-            # live: same R accepted in-browser, rejected from a plain client).
+            # Real-page flow: solve on the REAL target page and run post_fetch
+            # from the same browser session. Use this when the widget cannot be
+            # replicated on a stub (e.g. scenes that only render in-page), when
+            # the site's fetch wrapper must run, or when the caller wants the
+            # challenge solved in its exact page context.
+            #
+            # NOTE (corrected 2026-10-11): the R token is NOT session-bound. An
+            # earlier "session-bound" conclusion came from a missing request
+            # header: chat.z.ai's own fetch wrapper adds `x-region: overseas`,
+            # and without it every redeem 400s even from the same session.
+            # Stub-solved R + that header was accepted from a plain HTTP client
+            # (no browser, no cookies). Prefer stub mode + post_fetch headers
+            # for speed; real_page remains for in-page-only scenes.
             #
             # Dispatched to a SUBPROCESS for the same reason as the stub path
             # below: drag-trajectory timing is fidelity-sensitive to running on
@@ -598,19 +608,39 @@ async def _dispatch(req: SolveRequest) -> dict:
         #   asyncio.run inside asyncio.to_thread       -> 0/12 F001 (off main thread)
         # A subprocess runs its own main-thread asyncio.run, exactly reproducing the
         # working direct-call conditions -> T001.
+        #
+        # post_fetch: the Aliyun R token is PORTABLE — verified live 2026-10-11 a
+        # stub-solved R was accepted by chat.z.ai from a plain HTTP client carrying
+        # the site's own header (x-region: overseas); no cookies/browser needed at
+        # redeem time. So post_fetch runs inside the runner process (server-side HTTP).
         import os as _os
+        import tempfile as _tf
         _to = req.timeout_s or 90
-        proc = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "aliyun._run",
-            req.scene_id or "", req.prefix or "", req.region or "sgp",
-            str(_to), req.proxy or "",
-            cwd=_os.path.dirname(_os.path.abspath(__file__)),
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        _actions, _fetches = _extract(req)
+        _spec = {"post_fetch": _fetches, "page_url": req.page_url}
+        _spec_path = None
+        if _fetches or req.page_url:
+            with _tf.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+                json.dump(_spec, f)
+                _spec_path = f.name
         try:
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=_to + 30)
-        except asyncio.TimeoutError:
-            proc.kill()
-            return {"type": "aliyun", "solved": False, "error": "subprocess deadline"}
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, "-m", "aliyun._run",
+                req.scene_id or "", req.prefix or "", req.region or "sgp",
+                str(_to), req.proxy or "", _spec_path or "",
+                cwd=_os.path.dirname(_os.path.abspath(__file__)),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            try:
+                out, err = await asyncio.wait_for(proc.communicate(), timeout=_to + 30)
+            except asyncio.TimeoutError:
+                proc.kill()
+                return {"type": "aliyun", "solved": False, "error": "subprocess deadline"}
+        finally:
+            if _spec_path:
+                try:
+                    _os.unlink(_spec_path)
+                except OSError:
+                    pass
         r = {"solved": False, "error": "no result from runner"}
         for line in (out or b"").decode(errors="replace").splitlines():
             if line.startswith("__ALIYUN_RESULT__"):
