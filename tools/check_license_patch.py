@@ -26,8 +26,12 @@ REQUIRED = [
     "_ZN9ungoogled14LicenseRuntime5StartE13scoped_refptrIN7network22SharedURLLoaderFactoryEES4_",
     "_ZN9ungoogled14LicenseRuntime3EndEv",
 ]
+# Optional symbols: patched when present, ignored when the build lacks them.
+# The signature changed between builds — 57.1 takes a TimeDelta deadline,
+# 57.2 takes no args. Whichever exists in the pinned build is checked.
 OPTIONAL = [
     "_ZN9ungoogled14LicenseRuntime37BlockUntilFingerprintTableKeyResolvedEN4base9TimeDeltaE",
+    "_ZN9ungoogled14LicenseRuntime37BlockUntilFingerprintTableKeyResolvedEv",
 ]
 PATCH = bytes.fromhex("31c0c3")  # xor eax, eax; ret
 

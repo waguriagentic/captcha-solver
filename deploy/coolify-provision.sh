@@ -31,7 +31,7 @@ COMPOSE_LOCATION="${COMPOSE_LOCATION:-/compose.coolify.yaml}"
 # line. The defaults below assume a checkout at ~/SAAS/captcha-solver; the
 # browser build is whatever `~/.cloakbrowser/` holds on the deployment host.
 CAPTCHA_ENV_FILE="${CAPTCHA_ENV_FILE:-$HOME/SAAS/captcha-solver/.env.production}"
-CAPTCHA_BROWSER_DIR="${CAPTCHA_BROWSER_DIR:-$HOME/.cloakbrowser/chromium-154.0.8037.57.1-pro}"
+CAPTCHA_BROWSER_DIR="${CAPTCHA_BROWSER_DIR:-$HOME/.cloakbrowser/chromium-154.0.8037.57.2-pro}"
 CAPTCHA_FONTS_DIR="${CAPTCHA_FONTS_DIR:-$HOME/SAAS/captcha-solver-host/fonts}"
 CAPTCHA_GEOIP_DIR="${CAPTCHA_GEOIP_DIR:-$HOME/SAAS/captcha-solver-host/geoip}"
 CAPTCHA_ARKOSE_MODELS_DIR="${CAPTCHA_ARKOSE_MODELS_DIR:-$HOME/SAAS/captcha-solver-host/arkose-models}"
